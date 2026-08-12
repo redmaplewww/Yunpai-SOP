@@ -19,7 +19,6 @@
     .product-select{min-width:210px;max-width:330px;height:36px;border:1px solid var(--line);border-radius:8px;background:white;padding:0 10px;color:var(--ink)}
     .route-state{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:#c08b1c}.dot.ready{background:var(--green)}
     .spacer{flex:1}.worker{width:130px;height:36px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:white}
-    .text-link{color:var(--muted);text-decoration:none;font-size:13px;padding:8px}.text-link:hover{color:var(--blue)}
     .download{height:36px;border:0;border-radius:8px;padding:0 14px;background:var(--blue);color:white;text-decoration:none;display:flex;align-items:center;gap:7px;font-weight:650}.download:hover{background:#1748ae}
     .workspace{height:calc(100vh - 64px);display:grid;grid-template-columns:minmax(560px,1fr) 420px;gap:1px;background:var(--line);overflow:hidden}
     .preview{position:relative;min-width:0;min-height:0;height:100%;background:#777b80;display:flex;flex-direction:column}.pane-head{height:43px;flex:none;display:flex;align-items:center;padding:0 15px;background:#f6f5f2;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.pane-head strong{color:var(--ink);font-size:13px;margin-right:8px}.page-count{margin-left:auto}.doc-frame{width:100%;height:100%;min-height:0;border:0;background:#74777c}.preview-empty{position:absolute;inset:43px 0 0;display:grid;place-items:center;background:#74777c;color:white;text-align:center}.preview-empty div{max-width:300px}.preview-empty b{display:block;margin-bottom:6px}
@@ -29,7 +28,7 @@
     details{border-top:1px solid #eceae5;padding:0 13px}summary{cursor:pointer;color:#4e5965;font-size:12px;padding:9px 0;list-style:none}summary::-webkit-details-marker{display:none}summary:before{content:'›';font-size:16px;margin-right:6px}.detail-body{padding:0 0 10px;color:var(--muted);font-size:11px;line-height:1.6}.decision{border-left:3px solid var(--blue);padding-left:8px;margin:5px 0}.change{background:#f5f6f8;border-radius:7px;padding:8px;margin:6px 0}.change b{color:var(--ink)}.warning{color:#8b5e00;background:#fff7d9;border-radius:7px;padding:7px;margin-top:7px}
     .composer{flex:none;padding:12px;border-top:1px solid var(--line);background:#fff}.compose-box{border:1px solid #bfc4cc;border-radius:12px;background:white;box-shadow:0 4px 14px rgba(30,35,40,.06);overflow:hidden}.compose-box:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px rgba(36,89,196,.1)}textarea{display:block;width:100%;min-height:82px;max-height:180px;resize:vertical;border:0;outline:0;padding:12px 13px 4px;line-height:1.55}.compose-actions{display:flex;align-items:center;padding:7px 8px 8px}.hint{color:var(--muted);font-size:10px;padding-left:5px}.send{margin-left:auto;border:0;border-radius:8px;background:var(--blue);color:#fff;padding:8px 12px;font-weight:650;cursor:pointer}.send:disabled{opacity:.55;cursor:wait}.error{margin:0 12px 8px;color:var(--red);font-size:11px}.typing{color:var(--muted);font-size:12px;padding:4px 1px}.typing:after{content:'…';animation:pulse 1s infinite}@keyframes pulse{50%{opacity:.2}}
     @media(max-width:980px){html,body{height:auto;overflow:auto}.topbar{position:sticky;top:0;z-index:5;flex-wrap:wrap;height:auto;min-height:64px;padding:9px 12px}.brand{min-width:160px}.route-state{display:none}.worker{width:105px}.workspace{height:auto;min-height:calc(100vh - 64px);grid-template-columns:1fr;overflow:visible}.preview{height:58vh}.chat{height:auto;min-height:72vh}.download span{display:none}}
-    @media(max-width:620px){.product-select{order:3;min-width:100%;max-width:none}.text-link{display:none}.brand{flex:1}.workspace{display:block}.preview{height:52vh}.worker{width:100px}.chat-head{height:auto}.download{padding:0 10px}}
+    @media(max-width:620px){.product-select{order:3;min-width:100%;max-width:none}.brand{flex:1}.workspace{display:block}.preview{height:52vh}.worker{width:100px}.chat-head{height:auto}.download{padding:0 10px}}
   </style>
 </head>
 <body>
@@ -39,7 +38,6 @@
     <div class="route-state"><i id="stateDot" class="dot"></i><span id="routeState">正在载入</span></div>
     <div class="spacer"></div>
     <input id="worker" class="worker" value="现场审核员" aria-label="工作人员姓名或工号" title="工作人员姓名或工号">
-    <a class="text-link" href="/workbench">打开完整版</a>
     <a id="download" class="download" href="#" download><span>下载 DOCX</span> ↓</a>
   </header>
 

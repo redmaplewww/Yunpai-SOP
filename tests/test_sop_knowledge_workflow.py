@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -307,7 +308,7 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
                     "UPDATE operation_template_version SET definition_json='{}' WHERE id=?", (version_id,)
                 )
 
-    def test_human_review_workbench_exposes_route_and_editor(self) -> None:
+    def test_only_conversational_docx_workbench_is_exposed(self) -> None:
         route_id = self.add_route("TEST-UI")
         server = create_builtin_server(self.store.path, "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -317,15 +318,14 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             simple_page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
             self.assertIn("DOCX 实时预览", simple_page)
             self.assertIn("发送并更新 DOCX", simple_page)
-            self.assertIn("打开完整版", simple_page)
-            page = urllib.request.urlopen(base + "/workbench", timeout=5).read().decode("utf-8")
-            self.assertIn("可变工序树", page)
+            self.assertNotIn("打开完整版", simple_page)
+            with self.assertRaises(urllib.error.HTTPError) as missing_workbench:
+                urllib.request.urlopen(base + "/workbench", timeout=5)
+            self.assertEqual(missing_workbench.exception.code, 404)
             payload = json.loads(urllib.request.urlopen(base + f"/api/routes/{route_id}", timeout=5).read())
             self.assertEqual(payload["route"]["product_code"], "TEST-UI")
             self.assertEqual(len(payload["steps"]), 7)
             self.assertEqual({item["section_type"] for item in payload["sections"]}, set(SECTION_TYPES))
-            self.assertIn("正式生产批准", page)
-            self.assertIn("demonstration_only", page)
             identity_section = next(item for item in payload["sections"] if item["section_type"] == "product_identity")
             request_body = json.dumps({
                 "content": {**identity_section["content_json"], "product_name": "HTTP人工编辑名称"},

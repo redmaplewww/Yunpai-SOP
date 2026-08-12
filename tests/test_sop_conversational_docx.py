@@ -91,12 +91,12 @@ class SopConversationalDocxTests(unittest.TestCase):
         self.assertTrue(history[-1]["metadata_json"]["docx_regenerated"])
         self.assertIn("judgement", history[-1]["metadata_json"])
 
-    def test_document_fingerprint_detects_structured_workbench_edits(self) -> None:
+    def test_document_fingerprint_detects_backend_route_edits(self) -> None:
         documents = SopDocumentService(self.store)
         before = documents._route_fingerprint(self.route_id)
         step = self.store.get_route(self.route_id)["steps"][0]
         self.store.update_step_field(
-            step["id"], "method", ["人工在完整版修改后的新动作"], reviewer="worker-02",
+            step["id"], "method", ["人工通过受控接口修改后的新动作"], reviewer="worker-02",
             decision="needs_revision", comment="测试文档失效检测",
         )
         after = documents._route_fingerprint(self.route_id)

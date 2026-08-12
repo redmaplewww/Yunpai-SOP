@@ -26,7 +26,7 @@ python -m cad_ai.sop_knowledge.web `
   --port 8787
 ```
 
-打开 `http://127.0.0.1:8787/`。完整版人工审核台位于 `/workbench`。
+打开 `http://127.0.0.1:8787/`。仓库只提供这一套“自然语言对话 + DOCX/PDF 预览”前端，不再包含旧的结构化填表工作台。
 
 ## 生成路线型 HDMI SOP
 
@@ -51,4 +51,3 @@ python -m unittest discover -s tests -p "test_sop_*.py" -v
 ## 凭据
 
 复制 `.env.example` 为 `.env.local` 并在本机填写。不要提交真实 API Key。
-

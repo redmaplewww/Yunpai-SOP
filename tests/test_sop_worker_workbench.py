@@ -90,12 +90,13 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         with zipfile.ZipFile(rendered.docx_path) as archive:
             self.assertEqual(len([name for name in archive.namelist() if name.startswith("word/media/")]), 1)
 
-    def test_worker_page_exposes_simple_natural_language_flow(self) -> None:
-        from cad_ai.sop_knowledge.web import REVIEW_HTML
+    def test_only_conversational_docx_page_is_packaged(self) -> None:
+        from cad_ai.sop_knowledge.web import SIMPLE_REVIEW_HTML
 
-        for text in ("直接说哪里要改", "理解并预览", "确认本工序", "相似历史内容", "上传 PNG / JPEG"):
-            self.assertIn(text, REVIEW_HTML)
-        self.assertNotIn("content_json</label>", REVIEW_HTML)
+        for text in ("DOCX 实时预览", "直接告诉 AI 哪里要改", "发送并更新 DOCX", "下载 DOCX"):
+            self.assertIn(text, SIMPLE_REVIEW_HTML)
+        for obsolete in ("打开完整版", "可变工序树", "content_json</label>"):
+            self.assertNotIn(obsolete, SIMPLE_REVIEW_HTML)
 
 
 if __name__ == "__main__":
