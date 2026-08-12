@@ -36,6 +36,7 @@
     <div class="brand"><div class="wordmark">W</div><div><b>SOP DOCX 校样台</b><small>对话修改 · 自动出稿</small></div></div>
     <select id="product" class="product-select" aria-label="选择产品"></select>
     <div class="route-state"><i id="stateDot" class="dot"></i><span id="routeState">正在载入</span></div>
+    <div class="route-state"><i id="aiDot" class="dot"></i><span id="aiState">正在检查 AI</span></div>
     <div class="spacer"></div>
     <input id="worker" class="worker" value="现场审核员" aria-label="工作人员姓名或工号" title="工作人员姓名或工号">
     <a id="download" class="download" href="#" download><span>下载 DOCX</span> ↓</a>
@@ -64,6 +65,12 @@
     const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     async function api(url,opt={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();if(!response.ok)throw Error(data.detail||data||response.statusText);return data}
     function setError(message=''){$('error').textContent=message}
+    async function loadAssistantStatus(){
+      try{
+        const status=await api('/api/assistant/status'),connected=status.mode==='ai_with_offline_fallback'&&status.credential==='configured';
+        $('aiState').textContent=connected?'AI 模型已连接':'离线兜底模式';$('aiDot').classList.toggle('ready',connected);
+      }catch(error){$('aiState').textContent='AI 状态不可用';$('aiDot').classList.remove('ready')}
+    }
     async function loadProducts(preferred){
       products=await api('/api/products');
       $('product').innerHTML=products.map(p=>`<option value="${p.latest_route_id}">${esc(p.product_code)} · ${esc(p.product_name)}</option>`).join('');
@@ -112,7 +119,7 @@
     $('product').addEventListener('change',event=>loadRoute(event.target.value).catch(error=>setError(error.message)));
     $('send').addEventListener('click',send);$('prompt').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}});
     document.querySelectorAll('.chip').forEach(chip=>chip.addEventListener('click',()=>{$('prompt').value=chip.textContent;$('prompt').focus()}));
-    loadProducts().catch(error=>setError(`工作台载入失败：${error.message}`));
+    loadAssistantStatus();loadProducts().catch(error=>setError(`工作台载入失败：${error.message}`));
   </script>
 </body>
 </html>

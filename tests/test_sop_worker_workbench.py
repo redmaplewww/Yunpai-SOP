@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import base64
+import json
+import os
 import tempfile
+import threading
 import unittest
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from cad_ai.sop_knowledge.nl_assistant import NaturalLanguageSopAssistant
 from cad_ai.sop_knowledge.models import RouteSectionDraft
@@ -52,6 +57,65 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual(len(proposal["image_refs"]), 2)
         self.assertTrue(proposal["requires_human_confirmation"])
 
+    def test_openai_compatible_llm_path_returns_reviewable_proposal(self) -> None:
+        route = self.store.get_route(self.route_id)
+        step = route["steps"][0]
+
+        class ModelHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                request_payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.server.request_payload = request_payload  # type: ignore[attr-defined]
+                proposal = {
+                    "assistant_message": "已由模型定位第一道工序。",
+                    "judgement": ["工序名称与上下文一致。"],
+                    "changes": [{
+                        "step_ref": step["step_code"],
+                        "field_name": "method",
+                        "value": ["模型解析后的受控测试动作"],
+                        "reason": "验证真实模型协议路径",
+                    }],
+                    "new_steps": [],
+                    "section_changes": [],
+                    "image_refs": [],
+                    "summary": "识别到 1 项修改。",
+                    "warnings": [],
+                }
+                body = json.dumps({
+                    "choices": [{"message": {"content": json.dumps(proposal, ensure_ascii=False)}}]
+                }, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(os.environ, {
+                "OPENAI_API_KEY": "test-only-key",
+                "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_address[1]}",
+                "OPENAI_MODEL": "test-model",
+            }):
+                proposal, parser_kind = NaturalLanguageSopAssistant().preview(
+                    "请把第一道工序改成工作人员可执行的动作。", route
+                )
+            self.assertEqual(parser_kind, "llm")
+            self.assertEqual(proposal["changes"][0]["step_id"], step["id"])
+            self.assertEqual(proposal["changes"][0]["value"], ["模型解析后的受控测试动作"])
+            request_payload = server.request_payload  # type: ignore[attr-defined]
+            self.assertEqual(request_payload["model"], "test-model")
+            self.assertEqual(request_payload["response_format"], {"type": "json_object"})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
     def test_proposal_apply_stays_unconfirmed_until_explicit_step_confirmation(self) -> None:
         route = self.store.get_route(self.route_id)
         proposal, parser_kind = NaturalLanguageSopAssistant(use_llm=False).preview(
@@ -93,8 +157,9 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
     def test_only_conversational_docx_page_is_packaged(self) -> None:
         from cad_ai.sop_knowledge.web import SIMPLE_REVIEW_HTML
 
-        for text in ("DOCX 实时预览", "直接告诉 AI 哪里要改", "发送并更新 DOCX", "下载 DOCX"):
+        for text in ("DOCX 实时预览", "直接告诉 AI 哪里要改", "发送并更新 DOCX", "下载 DOCX", "AI 模型已连接"):
             self.assertIn(text, SIMPLE_REVIEW_HTML)
+        self.assertIn("use_ai:true", SIMPLE_REVIEW_HTML)
         for obsolete in ("打开完整版", "可变工序树", "content_json</label>"):
             self.assertNotIn(obsolete, SIMPLE_REVIEW_HTML)
 

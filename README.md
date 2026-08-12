@@ -28,6 +28,8 @@ python -m cad_ai.sop_knowledge.web `
 
 打开 `http://127.0.0.1:8787/`。仓库只提供这一套“自然语言对话 + DOCX/PDF 预览”前端，不再包含旧的结构化填表工作台。
 
+页面顶部显示当前模型状态：配置完整时为“AI 模型已连接”，模型请求失败时单次请求才会降级为离线规则，并在回答卡片中明确标记“离线解析”。
+
 ## 生成路线型 HDMI SOP
 
 ```powershell
@@ -50,4 +52,4 @@ python -m unittest discover -s tests -p "test_sop_*.py" -v
 
 ## 凭据
 
-复制 `.env.example` 为 `.env.local` 并在本机填写。不要提交真实 API Key。
+推荐使用 Codex 的 `llm-api-config` skill，把选定的本机加密配置档注入仓库根目录。应用读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`（也兼容对应的 `LLM_*` 变量）。本地配置写入 `.env.local`，该文件已被 Git 忽略；不要把真实 API Key 写入源码、测试或提交记录。
