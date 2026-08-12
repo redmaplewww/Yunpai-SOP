@@ -98,6 +98,10 @@ def create_review_app(db_path: str | Path):
     def index() -> str:
         return SIMPLE_REVIEW_HTML
 
+    @app.get("/workbench", response_class=HTMLResponse)
+    def workbench() -> str:
+        return REVIEW_HTML
+
     @app.get("/api/products")
     def products() -> list[dict[str, Any]]:
         return store.list_products()
@@ -180,6 +184,10 @@ def create_review_app(db_path: str | Path):
         from fastapi.responses import FileResponse
         asset = guard(lambda: store.get_media_asset(asset_id))
         return FileResponse(asset["storage_path"], media_type=asset["mime_type"], filename=asset["original_name"])
+
+    @app.delete("/api/media/{asset_id}")
+    def delete_media(asset_id: int) -> dict[str, Any]:
+        return guard(lambda: store.delete_media_asset(asset_id))
 
     @app.post("/api/steps/{step_id}/confirm")
     def confirm_step(step_id: int, request: StepConfirmRequest) -> dict[str, Any]:
@@ -330,6 +338,8 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             query = parse_qs(parsed.query)
             if path == "/":
                 self._send(200, SIMPLE_REVIEW_HTML, "text/html; charset=utf-8")
+            elif path == "/workbench":
+                self._send(200, REVIEW_HTML, "text/html; charset=utf-8")
             elif path == "/api/products":
                 self._run(store.list_products)
             elif path == "/api/assistant/status":
@@ -409,12 +419,15 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             self._send(404, {"detail": "not found"})
 
         def do_DELETE(self) -> None:
-            match = re.fullmatch(r"/api/steps/(\d+)", self.path)
-            if not match:
-                self._send(404, {"detail": "not found"})
+            if match := re.fullmatch(r"/api/media/(\d+)", self.path):
+                asset_id = int(match.group(1))
+                self._run(lambda: store.delete_media_asset(asset_id))
                 return
-            step_id = int(match.group(1))
-            self._run(lambda: (store.delete_step(step_id), {"status": "deleted", "step_id": step_id})[1])
+            if match := re.fullmatch(r"/api/steps/(\d+)", self.path):
+                step_id = int(match.group(1))
+                self._run(lambda: (store.delete_step(step_id), {"status": "deleted", "step_id": step_id})[1])
+                return
+            self._send(404, {"detail": "not found"})
 
         def do_POST(self) -> None:
             body = self._body()
@@ -500,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 SIMPLE_REVIEW_HTML = Path(__file__).with_name("simple_workbench.html").read_text(encoding="utf-8")
+REVIEW_HTML = Path(__file__).with_name("workbench.html").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":

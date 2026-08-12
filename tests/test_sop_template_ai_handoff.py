@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import base64
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from docx import Document
@@ -23,6 +25,11 @@ from scripts.generate_sop_template_ai_handoff import (
 )
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from tests.test_sop_knowledge_workflow import make_identity, make_route
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class SopTemplateAiHandoffTests(unittest.TestCase):
@@ -103,6 +110,41 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                     [document.tables[base + 3].cell(1, index).text.strip() for index in range(3)],
                     ["", "", ""],
                 )
+
+    def test_route_backed_hdmi_embeds_only_confirmed_step_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SopKnowledgeStore(root / "knowledge.sqlite3")
+            store.initialize()
+            store.ensure_process_family("test_family", "测试工艺族")
+            identity = make_identity("HDMI-MEDIA-TEST")
+            store.upsert_product(identity, {"class": "cable"})
+            route_id = store.create_route(make_route(identity, 2))
+            steps = store.get_route(route_id)["steps"]
+            confirmed = store.upload_media_asset(
+                route_id, original_name="confirmed.png", mime_type="image/png",
+                data=PNG_1X1, uploaded_by="worker-01",
+            )
+            draft = store.upload_media_asset(
+                route_id, original_name="draft.png", mime_type="image/png",
+                data=PNG_1X1 + b"draft", uploaded_by="worker-01",
+            )
+            store.link_media_asset(steps[0]["id"], confirmed["id"], caption="确认图片")
+            store.confirm_step(steps[0]["id"], reviewer="worker-01")
+            store.link_media_asset(steps[1]["id"], draft["id"], caption="草稿图片")
+
+            result = generate_route_package(
+                root / "package", document_date="2026-08-12", db_path=store.path, route_id=route_id,
+            )
+
+            with zipfile.ZipFile(result["document_docx"]) as archive:
+                embedded = [name for name in archive.namelist() if name.startswith("word/media/")]
+            self.assertEqual(len(embedded), 2)  # 流程图 + 1 张已确认工序图片
+            document = Document(result["document_docx"])
+            first_page_body = document.tables[5]
+            second_page_body = document.tables[9]
+            self.assertNotIn("待人工上传确认", first_page_body.cell(0, 1).text)
+            self.assertIn("待人工上传确认", second_page_body.cell(0, 1).text)
 
     def test_check_only_validation_rejects_missing_document(self) -> None:
         result = validate_document(Path("does-not-exist.docx"))

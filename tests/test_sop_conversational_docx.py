@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from typing import Any
 
 from cad_ai.sop_knowledge.conversation import SopConversationService
-from cad_ai.sop_knowledge.documents import SopDocumentService
+from cad_ai.sop_knowledge.documents import MULTI_PAGE_TEMPLATE_ID, SopDocumentService
 from cad_ai.sop_knowledge.models import RouteSectionDraft
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from tests.test_sop_knowledge_workflow import make_identity, make_route
@@ -101,6 +102,49 @@ class SopConversationalDocxTests(unittest.TestCase):
         )
         after = documents._route_fingerprint(self.route_id)
         self.assertNotEqual(before, after)
+
+    def test_latest_repairs_missing_preview_pages_from_existing_pdf(self) -> None:
+        import pymupdf
+
+        documents = SopDocumentService(self.store)
+        output_dir = documents.root / f"route_{self.route_id}"
+        preview_dir = output_dir / "preview"
+        output_dir.mkdir(parents=True)
+        preview_dir.mkdir(parents=True)
+        docx_path = output_dir / "test.docx"
+        pdf_path = preview_dir / "test.pdf"
+        docx_path.write_bytes(b"test-docx")
+        pdf = pymupdf.open()
+        pdf.new_page(width=595, height=842).insert_text((72, 72), "preview page")
+        pdf.save(pdf_path)
+        pdf.close()
+        manifest = {
+            "route_id": self.route_id,
+            "route_version": 1,
+            "product_code": "CHAT-TEST",
+            "generated_at": "2026-08-12T00:00:00+00:00",
+            "version_token": "test",
+            "route_fingerprint": documents._route_fingerprint(self.route_id),
+            "template_id": MULTI_PAGE_TEMPLATE_ID,
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_path": str(docx_path),
+            "pdf_path": str(pdf_path),
+            "page_paths": [],
+            "page_count": 1,
+            "expected_page_count": 1,
+            "validation_path": "",
+            "media_count": 0,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+        }
+        (output_dir / "document_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        result = documents.latest(self.route_id)
+
+        self.assertEqual(len(result["page_urls"]), 1)
+        page_path, mime_type, _ = documents.resolve_file(self.route_id, "page", page_no=1)
+        self.assertEqual(mime_type, "image/png")
+        self.assertTrue(page_path.is_file())
 
 
 if __name__ == "__main__":

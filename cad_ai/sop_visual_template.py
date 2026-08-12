@@ -1086,10 +1086,41 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
 
 def _fill_word_step_cells(image_cell: Any, text_cell: Any, slot: dict[str, Any] | None, slot_no: int) -> None:
     slot = slot or {"slot_no": slot_no, "image_label": "图片占位", "text_placeholder": ""}
-    image_text = _slot_image_cell(slot)
     step_text = _clean_step_text(str(slot.get("text_placeholder") or ""))
-    _set_word_cell(image_cell, f"{slot_no}\n{image_text}", bold=True, size=12, color="D40000")
+    image_path = Path(str(slot.get("image_path") or ""))
+    if image_path.is_file():
+        _fill_word_image_cell(image_cell, image_path, slot_no)
+    else:
+        image_text = _slot_image_cell(slot)
+        _set_word_cell(image_cell, f"{slot_no}\n{image_text}", bold=True, size=12, color="D40000")
     _set_word_cell(text_cell, f"{slot_no}. {step_text}" if step_text else f"{slot_no}. ", align=WD_ALIGN_PARAGRAPH.LEFT)
+
+
+def _fill_word_image_cell(cell: Any, image_path: Path, slot_no: int) -> None:
+    from PIL import Image
+
+    _clear_word_cell(cell)
+    label = cell.paragraphs[0]
+    label.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    label.paragraph_format.space_before = Pt(0)
+    label.paragraph_format.space_after = Pt(0)
+    label_run = label.add_run(str(slot_no))
+    label_run.bold = True
+    label_run.font.size = Pt(7)
+    label_run.font.color.rgb = _rgb_color("D40000")
+    picture = cell.add_paragraph()
+    picture.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    picture.paragraph_format.space_before = Pt(0)
+    picture.paragraph_format.space_after = Pt(0)
+    with Image.open(image_path) as source:
+        width_px, height_px = source.size
+    max_width_cm, max_height_cm = 4.7, 2.15
+    scale = min(max_width_cm / max(width_px, 1), max_height_cm / max(height_px, 1))
+    picture.add_run().add_picture(
+        str(image_path), width=Cm(max(width_px * scale, 0.25)), height=Cm(max(height_px * scale, 0.25))
+    )
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_word_cell_margins(cell, top=20, start=40, bottom=20, end=40)
 
 
 def _word_side_panel_text(page: dict[str, Any]) -> str:

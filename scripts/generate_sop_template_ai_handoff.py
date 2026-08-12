@@ -41,7 +41,7 @@ from cad_ai.sop_visual_template import (
 
 TEMPLATE_ID = "yunpai.sop.usb_c_cable_packaging.two_page.v1"
 FINAL_DOCX_NAME = "SOP完整模板_USB-C数据线包装_草案.docx"
-HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v1"
+HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v2"
 HDMI_FINAL_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 CENTER_FLOWCHART_NAME = "center_flowchart.png"
 MANIFEST_NAME = "sop_template_manifest.json"
@@ -202,7 +202,7 @@ def generate_route_package(
         "tables_per_flow_page": 4,
         "tables_per_instruction_page": 4,
         "visual_step_order_each_instruction_page": "1,2,3 / 6,5,4",
-        "images": "blank_until_human_upload_and_confirmation",
+        "images": "embed_confirmed_step_media_and_leave_unbound_slots_blank",
         "status": "demo_not_for_release",
     }
     format_check_path = output / FORMAT_CHECK_NAME
@@ -561,18 +561,33 @@ def _route_template_pages(
         row["工时来源"] = "待IE实测/人工锁定"
 
     page_total = len(steps)
+    confirmed_media_by_step: dict[int, list[dict[str, Any]]] = {}
+    for item in payload.get("media") or []:
+        media_path = Path(str(item.get("storage_path") or ""))
+        if item.get("link_state") != "confirmed" or not media_path.is_file():
+            continue
+        confirmed_media_by_step.setdefault(int(item["route_step_id"]), []).append(item)
     work_pages: list[dict[str, Any]] = []
     for page_no, step in enumerate(steps, start=1):
         methods = [str(item).strip() for item in step.get("method_json", []) if str(item).strip()]
+        step_media = confirmed_media_by_step.get(int(step["id"]), [])[:6]
         slots = []
         for slot_no in range(1, 7):
             method = methods[slot_no - 1] if slot_no <= len(methods) else ""
-            slots.append({
+            slot = {
                 "slot_no": slot_no,
                 "image_placeholder": True,
                 "image_label": "图片区（待人工上传确认）",
                 "text_placeholder": f"{slot_no}. {method}" if method else f"{slot_no}. ",
-            })
+            }
+            if slot_no <= len(step_media):
+                media = step_media[slot_no - 1]
+                slot.update({
+                    "image_placeholder": False,
+                    "image_path": str(media["storage_path"]),
+                    "image_caption": str(media.get("caption") or media.get("original_name") or ""),
+                })
+            slots.append(slot)
         page = build_work_instruction_page(
             product_name=product_name,
             part_no=part_no,

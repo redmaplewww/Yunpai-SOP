@@ -21,7 +21,7 @@
     .spacer{flex:1}.worker{width:130px;height:36px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:white}
     .download{height:36px;border:0;border-radius:8px;padding:0 14px;background:var(--blue);color:white;text-decoration:none;display:flex;align-items:center;gap:7px;font-weight:650}.download:hover{background:#1748ae}
     .workspace{height:calc(100vh - 64px);display:grid;grid-template-columns:minmax(560px,1fr) 420px;gap:1px;background:var(--line);overflow:hidden}
-    .preview{position:relative;min-width:0;min-height:0;height:100%;background:#777b80;display:flex;flex-direction:column}.pane-head{height:43px;flex:none;display:flex;align-items:center;padding:0 15px;background:#f6f5f2;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.pane-head strong{color:var(--ink);font-size:13px;margin-right:8px}.page-count{margin-left:auto}.doc-frame{width:100%;height:100%;min-height:0;border:0;background:#74777c}.preview-empty{position:absolute;inset:43px 0 0;display:grid;place-items:center;background:#74777c;color:white;text-align:center}.preview-empty div{max-width:300px}.preview-empty b{display:block;margin-bottom:6px}
+    .preview{position:relative;min-width:0;min-height:0;height:100%;background:#777b80;display:flex;flex-direction:column}.pane-head{height:43px;flex:none;display:flex;align-items:center;padding:0 15px;background:#f6f5f2;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.pane-head strong{color:var(--ink);font-size:13px;margin-right:8px}.page-count{margin-left:auto}.doc-pages{flex:1;min-height:0;overflow:auto;padding:20px;display:flex;flex-direction:column;align-items:center;gap:18px;background:#74777c}.doc-page{width:min(100%,1100px);margin:0}.doc-page img{display:block;width:100%;height:auto;background:white;box-shadow:0 3px 16px rgba(0,0,0,.3)}.doc-page figcaption{text-align:center;color:#f3f3f3;font-size:11px;padding-top:6px}.doc-frame{display:none;width:100%;height:100%;min-height:0;border:0;background:#74777c}.preview-empty{position:absolute;z-index:2;inset:43px 0 0;display:grid;place-items:center;background:#74777c;color:white;text-align:center}.preview-empty div{max-width:300px}.preview-empty b{display:block;margin-bottom:6px}
     .chat{min-width:0;min-height:0;height:100%;background:#f8f7f4;display:flex;flex-direction:column}.chat-head{height:72px;flex:none;padding:14px 17px;border-bottom:1px solid var(--line);background:#fff}.chat-head h1{font-size:16px;margin:0 0 4px}.chat-head p{font-size:12px;color:var(--muted);margin:0}.messages{flex:1;min-height:0;overflow:auto;padding:18px 16px 26px;scroll-behavior:smooth}
     .welcome{border:1px solid var(--line);border-radius:12px;background:white;padding:14px;margin-bottom:14px}.welcome b{font-size:14px}.welcome p{color:var(--muted);font-size:12px;line-height:1.65;margin:7px 0}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid #cbd6ee;background:var(--blue-soft);color:#264b94;border-radius:15px;padding:5px 9px;font-size:11px;cursor:pointer}.chip:hover{border-color:var(--blue)}
     .message{margin-bottom:14px}.message.user{display:flex;justify-content:flex-end}.bubble{max-width:91%;border-radius:12px;padding:10px 12px;font-size:13px;line-height:1.65;white-space:pre-wrap}.user .bubble{background:#dfe9ff;border-bottom-right-radius:3px}.assistant-card{background:white;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(30,35,40,.04)}.assistant-main{padding:12px 13px;font-size:13px;line-height:1.65}.assistant-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.badge{border-radius:12px;padding:3px 7px;font-size:10px;background:#eee;color:#555}.badge.ai{background:var(--blue-soft);color:#244d9b}.badge.docx{background:#e8f5ec;color:var(--green)}.badge.review{background:var(--yellow);color:#795b08}
@@ -38,13 +38,15 @@
     <div class="route-state"><i id="stateDot" class="dot"></i><span id="routeState">正在载入</span></div>
     <div class="spacer"></div>
     <input id="worker" class="worker" value="现场审核员" aria-label="工作人员姓名或工号" title="工作人员姓名或工号">
+    <a class="text-link" href="/workbench">打开完整版</a>
     <a id="download" class="download" href="#" download><span>下载 DOCX</span> ↓</a>
   </header>
 
   <main class="workspace">
     <section class="preview" aria-label="DOCX预览">
       <div class="pane-head"><strong>DOCX 实时预览</strong><span id="docVersion">尚未生成</span><span id="pageCount" class="page-count"></span></div>
-      <iframe id="docFrame" class="doc-frame" title="由最新DOCX转换的预览"></iframe>
+      <div id="docPages" class="doc-pages" aria-label="由最新 DOCX 转换的分页预览"></div>
+      <iframe id="docFrame" class="doc-frame" title="由最新 DOCX 转换的 PDF 备用预览"></iframe>
       <div id="previewEmpty" class="preview-empty"><div><b>正在生成 DOCX 预览</b><span>预览内容和下载文件来自同一个 DOCX 成品。</span></div></div>
     </section>
 
@@ -59,7 +61,7 @@
   </main>
 
   <script>
-    let products=[], routeId=null, documentInfo=null;
+    let products=[], routeId=null, documentInfo=null, documentRefreshTimer=null, documentRefreshBusy=false;
     const $=id=>document.getElementById(id);
     const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     async function api(url,opt={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();if(!response.ok)throw Error(data.detail||data||response.statusText);return data}
@@ -79,7 +81,11 @@
     function refreshDocument(doc){
       documentInfo=doc;$('docVersion').textContent=`${doc.product_code} · v${doc.route_version} · ${new Date(doc.generated_at).toLocaleString()}`;
       $('pageCount').textContent=`${doc.page_count} 页`;$('download').href=doc.docx_url;
-      $('docFrame').src=doc.preview_url+'#toolbar=1&navpanes=0&view=FitH';$('previewEmpty').style.display='none';
+      const pages=doc.page_urls||[];$('docPages').innerHTML=pages.map((url,index)=>`<figure class="doc-page"><img src="${esc(url)}" alt="SOP 第 ${index+1} 页" loading="${index?'lazy':'eager'}"><figcaption>第 ${index+1} / ${pages.length} 页</figcaption></figure>`).join('');
+      $('docPages').style.display=pages.length?'flex':'none';$('docFrame').style.display=pages.length?'none':'block';$('docFrame').src=pages.length?'':doc.preview_url+'#toolbar=1&navpanes=0&view=FitH';$('previewEmpty').style.display='none';
+    }
+    function scheduleDocumentRefresh(){
+      clearInterval(documentRefreshTimer);documentRefreshTimer=setInterval(async()=>{if(documentRefreshBusy||!routeId||document.hidden||$('send').disabled)return;documentRefreshBusy=true;try{const doc=await api(`/api/routes/${routeId}/documents/latest`);if(doc.version_token!==documentInfo?.version_token)refreshDocument(doc)}catch(error){setError(`预览自动刷新失败：${error.message}`)}finally{documentRefreshBusy=false}},5000)
     }
     function renderHistory(history){
       const host=$('messages');host.querySelectorAll('.message,.typing').forEach(node=>node.remove());
@@ -112,7 +118,8 @@
     $('product').addEventListener('change',event=>loadRoute(event.target.value).catch(error=>setError(error.message)));
     $('send').addEventListener('click',send);$('prompt').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}});
     document.querySelectorAll('.chip').forEach(chip=>chip.addEventListener('click',()=>{$('prompt').value=chip.textContent;$('prompt').focus()}));
-    loadProducts().catch(error=>setError(`工作台载入失败：${error.message}`));
+    const requestedRoute=new URLSearchParams(window.location.search).get('route');
+    loadProducts(requestedRoute).then(scheduleDocumentRefresh).catch(error=>setError(`工作台载入失败：${error.message}`));
   </script>
 </body>
 </html>
