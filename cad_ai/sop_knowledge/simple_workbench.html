@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SOP DOCX 校样台</title>
+  <style>
+    :root{
+      --paper:#fff;--canvas:#e9e7e2;--ink:#202124;--muted:#696c70;--line:#d6d3cd;
+      --blue:#2459c4;--blue-soft:#edf3ff;--yellow:#fff3c4;--green:#2f7549;--red:#a53c32;
+      --shadow:0 12px 32px rgba(30,35,40,.12);--radius:14px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;overflow:hidden}body{margin:0;background:var(--canvas);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+    button,input,select,textarea{font:inherit}
+    button,a{transition:.15s ease}
+    .topbar{height:64px;display:flex;align-items:center;gap:15px;padding:0 18px;background:#f9f8f5;border-bottom:1px solid var(--line)}
+    .brand{display:flex;align-items:center;gap:10px;min-width:198px}.wordmark{width:34px;height:34px;border-radius:7px;background:var(--blue);color:#fff;display:grid;place-items:center;font-weight:800;font-family:Georgia,serif}.brand b{display:block;font-size:15px}.brand small{display:block;color:var(--muted);font-size:11px}
+    .product-select{min-width:210px;max-width:330px;height:36px;border:1px solid var(--line);border-radius:8px;background:white;padding:0 10px;color:var(--ink)}
+    .route-state{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:#c08b1c}.dot.ready{background:var(--green)}
+    .spacer{flex:1}.worker{width:130px;height:36px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:white}
+    .text-link{color:var(--muted);text-decoration:none;font-size:13px;padding:8px}.text-link:hover{color:var(--blue)}
+    .download{height:36px;border:0;border-radius:8px;padding:0 14px;background:var(--blue);color:white;text-decoration:none;display:flex;align-items:center;gap:7px;font-weight:650}.download:hover{background:#1748ae}
+    .workspace{height:calc(100vh - 64px);display:grid;grid-template-columns:minmax(560px,1fr) 420px;gap:1px;background:var(--line);overflow:hidden}
+    .preview{position:relative;min-width:0;min-height:0;height:100%;background:#777b80;display:flex;flex-direction:column}.pane-head{height:43px;flex:none;display:flex;align-items:center;padding:0 15px;background:#f6f5f2;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.pane-head strong{color:var(--ink);font-size:13px;margin-right:8px}.page-count{margin-left:auto}.doc-frame{width:100%;height:100%;min-height:0;border:0;background:#74777c}.preview-empty{position:absolute;inset:43px 0 0;display:grid;place-items:center;background:#74777c;color:white;text-align:center}.preview-empty div{max-width:300px}.preview-empty b{display:block;margin-bottom:6px}
+    .chat{min-width:0;min-height:0;height:100%;background:#f8f7f4;display:flex;flex-direction:column}.chat-head{height:72px;flex:none;padding:14px 17px;border-bottom:1px solid var(--line);background:#fff}.chat-head h1{font-size:16px;margin:0 0 4px}.chat-head p{font-size:12px;color:var(--muted);margin:0}.messages{flex:1;min-height:0;overflow:auto;padding:18px 16px 26px;scroll-behavior:smooth}
+    .welcome{border:1px solid var(--line);border-radius:12px;background:white;padding:14px;margin-bottom:14px}.welcome b{font-size:14px}.welcome p{color:var(--muted);font-size:12px;line-height:1.65;margin:7px 0}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid #cbd6ee;background:var(--blue-soft);color:#264b94;border-radius:15px;padding:5px 9px;font-size:11px;cursor:pointer}.chip:hover{border-color:var(--blue)}
+    .message{margin-bottom:14px}.message.user{display:flex;justify-content:flex-end}.bubble{max-width:91%;border-radius:12px;padding:10px 12px;font-size:13px;line-height:1.65;white-space:pre-wrap}.user .bubble{background:#dfe9ff;border-bottom-right-radius:3px}.assistant-card{background:white;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(30,35,40,.04)}.assistant-main{padding:12px 13px;font-size:13px;line-height:1.65}.assistant-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.badge{border-radius:12px;padding:3px 7px;font-size:10px;background:#eee;color:#555}.badge.ai{background:var(--blue-soft);color:#244d9b}.badge.docx{background:#e8f5ec;color:var(--green)}.badge.review{background:var(--yellow);color:#795b08}
+    details{border-top:1px solid #eceae5;padding:0 13px}summary{cursor:pointer;color:#4e5965;font-size:12px;padding:9px 0;list-style:none}summary::-webkit-details-marker{display:none}summary:before{content:'›';font-size:16px;margin-right:6px}.detail-body{padding:0 0 10px;color:var(--muted);font-size:11px;line-height:1.6}.decision{border-left:3px solid var(--blue);padding-left:8px;margin:5px 0}.change{background:#f5f6f8;border-radius:7px;padding:8px;margin:6px 0}.change b{color:var(--ink)}.warning{color:#8b5e00;background:#fff7d9;border-radius:7px;padding:7px;margin-top:7px}
+    .composer{flex:none;padding:12px;border-top:1px solid var(--line);background:#fff}.compose-box{border:1px solid #bfc4cc;border-radius:12px;background:white;box-shadow:0 4px 14px rgba(30,35,40,.06);overflow:hidden}.compose-box:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px rgba(36,89,196,.1)}textarea{display:block;width:100%;min-height:82px;max-height:180px;resize:vertical;border:0;outline:0;padding:12px 13px 4px;line-height:1.55}.compose-actions{display:flex;align-items:center;padding:7px 8px 8px}.hint{color:var(--muted);font-size:10px;padding-left:5px}.send{margin-left:auto;border:0;border-radius:8px;background:var(--blue);color:#fff;padding:8px 12px;font-weight:650;cursor:pointer}.send:disabled{opacity:.55;cursor:wait}.error{margin:0 12px 8px;color:var(--red);font-size:11px}.typing{color:var(--muted);font-size:12px;padding:4px 1px}.typing:after{content:'…';animation:pulse 1s infinite}@keyframes pulse{50%{opacity:.2}}
+    @media(max-width:980px){html,body{height:auto;overflow:auto}.topbar{position:sticky;top:0;z-index:5;flex-wrap:wrap;height:auto;min-height:64px;padding:9px 12px}.brand{min-width:160px}.route-state{display:none}.worker{width:105px}.workspace{height:auto;min-height:calc(100vh - 64px);grid-template-columns:1fr;overflow:visible}.preview{height:58vh}.chat{height:auto;min-height:72vh}.download span{display:none}}
+    @media(max-width:620px){.product-select{order:3;min-width:100%;max-width:none}.text-link{display:none}.brand{flex:1}.workspace{display:block}.preview{height:52vh}.worker{width:100px}.chat-head{height:auto}.download{padding:0 10px}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="wordmark">W</div><div><b>SOP DOCX 校样台</b><small>对话修改 · 自动出稿</small></div></div>
+    <select id="product" class="product-select" aria-label="选择产品"></select>
+    <div class="route-state"><i id="stateDot" class="dot"></i><span id="routeState">正在载入</span></div>
+    <div class="spacer"></div>
+    <input id="worker" class="worker" value="现场审核员" aria-label="工作人员姓名或工号" title="工作人员姓名或工号">
+    <a class="text-link" href="/workbench">打开完整版</a>
+    <a id="download" class="download" href="#" download><span>下载 DOCX</span> ↓</a>
+  </header>
+
+  <main class="workspace">
+    <section class="preview" aria-label="DOCX预览">
+      <div class="pane-head"><strong>DOCX 实时预览</strong><span id="docVersion">尚未生成</span><span id="pageCount" class="page-count"></span></div>
+      <iframe id="docFrame" class="doc-frame" title="由最新DOCX转换的预览"></iframe>
+      <div id="previewEmpty" class="preview-empty"><div><b>正在生成 DOCX 预览</b><span>预览内容和下载文件来自同一个 DOCX 成品。</span></div></div>
+    </section>
+
+    <aside class="chat" aria-label="自然语言修改栏">
+      <div class="chat-head"><h1>直接告诉 AI 哪里要改</h1><p>不需要找字段。AI 会定位工序或章节，写入草稿并重新生成 DOCX。</p></div>
+      <div id="messages" class="messages">
+        <div id="welcome" class="welcome"><b>你可以像交代同事一样说</b><p>例如指出第几道工序、名称或文档中的内容。每次修改后，右侧显示 AI 的判断和写入内容，左侧自动刷新。</p><div class="chips"><button class="chip">把第3道工序的操作拆成4个详细动作</button><button class="chip">补充压接后的检查方法和异常处理</button><button class="chip">在裁线后增加剥皮工序</button></div></div>
+      </div>
+      <div id="error" class="error"></div>
+      <div class="composer"><div class="compose-box"><textarea id="prompt" placeholder="例如：第5步太笼统，把作业指导改成先检查端子方向，再插入连接器，最后做轻拉确认……"></textarea><div class="compose-actions"><span class="hint">Enter 发送 · Shift+Enter 换行</span><button id="send" class="send">发送并更新 DOCX</button></div></div></div>
+    </aside>
+  </main>
+
+  <script>
+    let products=[], routeId=null, documentInfo=null;
+    const $=id=>document.getElementById(id);
+    const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    async function api(url,opt={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();if(!response.ok)throw Error(data.detail||data||response.statusText);return data}
+    function setError(message=''){$('error').textContent=message}
+    async function loadProducts(preferred){
+      products=await api('/api/products');
+      $('product').innerHTML=products.map(p=>`<option value="${p.latest_route_id}">${esc(p.product_code)} · ${esc(p.product_name)}</option>`).join('');
+      routeId=Number(preferred||products[0]?.latest_route_id||0);$('product').value=String(routeId);
+      if(routeId)await loadRoute(routeId);
+    }
+    async function loadRoute(id){
+      routeId=Number(id);setError('');$('previewEmpty').style.display='grid';$('routeState').textContent='正在准备 DOCX';$('stateDot').classList.remove('ready');
+      const [route,history,doc]=await Promise.all([api(`/api/routes/${routeId}`),api(`/api/routes/${routeId}/chat/history`),api(`/api/routes/${routeId}/documents/latest`)]);
+      const item=route.route;$('routeState').textContent=`${item.status} · v${item.version} · ${route.steps.length} 道工序`;$('stateDot').classList.add('ready');
+      documentInfo=doc;refreshDocument(doc);renderHistory(history);
+    }
+    function refreshDocument(doc){
+      documentInfo=doc;$('docVersion').textContent=`${doc.product_code} · v${doc.route_version} · ${new Date(doc.generated_at).toLocaleString()}`;
+      $('pageCount').textContent=`${doc.page_count} 页`;$('download').href=doc.docx_url;
+      $('docFrame').src=doc.preview_url+'#toolbar=1&navpanes=0&view=FitH';$('previewEmpty').style.display='none';
+    }
+    function renderHistory(history){
+      const host=$('messages');host.querySelectorAll('.message,.typing').forEach(node=>node.remove());
+      for(const item of history){if(item.role==='system')continue;appendMessage(item.role,item.content,item.metadata_json||{})}
+      host.scrollTop=host.scrollHeight;
+    }
+    function appendMessage(role,content,meta={}){
+      const wrap=document.createElement('div');wrap.className=`message ${role}`;
+      if(role==='user'){wrap.innerHTML=`<div class="bubble">${esc(content)}</div>`}
+      else{
+        const judgement=(meta.judgement||[]).map(x=>`<div class="decision">${esc(x)}</div>`).join('');
+        const changes=(meta.changes||[]).map(x=>`<div class="change"><b>${esc(x.target)}</b> · ${esc(x.field)}<br>${esc(x.change)}${x.reason?`<br><span>${esc(x.reason)}</span>`:''}</div>`).join('');
+        const warnings=(meta.warnings||[]).map(x=>`<div class="warning">${esc(x)}</div>`).join('');
+        const hasDetails=judgement||changes||warnings;
+        wrap.innerHTML=`<div class="assistant-card"><div class="assistant-main">${esc(content)}<div class="assistant-meta"><span class="badge ai">${meta.parser_kind==='llm'?'AI 已理解':'离线解析'}</span>${meta.docx_regenerated?'<span class="badge docx">DOCX 已重新生成</span>':'<span class="badge">未改动文档</span>'}<span class="badge review">待人工核对</span></div></div>${hasDetails?`<details open><summary>查看 AI 判断与实际写入</summary><div class="detail-body">${judgement}${changes}${warnings}</div></details>`:''}</div>`;
+      }
+      $('messages').appendChild(wrap);$('messages').scrollTop=$('messages').scrollHeight;
+    }
+    async function send(){
+      const message=$('prompt').value.trim(),worker=$('worker').value.trim();if(!message)return;if(!worker){setError('请填写工作人员姓名或工号。');return}
+      setError('');appendMessage('user',message);$('prompt').value='';$('send').disabled=true;$('send').textContent='AI 正在修改';
+      const typing=document.createElement('div');typing.className='typing';typing.textContent='AI 正在定位内容、修改草稿并生成 DOCX';$('messages').appendChild(typing);$('messages').scrollTop=$('messages').scrollHeight;
+      try{
+        const result=await api(`/api/routes/${routeId}/chat`,{method:'POST',body:JSON.stringify({message,worker,use_ai:true})});typing.remove();
+        if(Number(result.route_id)!==routeId){routeId=Number(result.route_id);await loadProducts(routeId)}
+        else{appendMessage('assistant',result.message,result);refreshDocument(result.document)}
+      }catch(error){typing.remove();setError(`没有完成修改：${error.message}`);appendMessage('assistant','这次没有成功更新 DOCX，请查看下方错误后重试。',{warnings:[error.message],parser_kind:'error'})}
+      finally{$('send').disabled=false;$('send').textContent='发送并更新 DOCX';$('prompt').focus()}
+    }
+    $('product').addEventListener('change',event=>loadRoute(event.target.value).catch(error=>setError(error.message)));
+    $('send').addEventListener('click',send);$('prompt').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}});
+    document.querySelectorAll('.chip').forEach(chip=>chip.addEventListener('click',()=>{$('prompt').value=chip.textContent;$('prompt').focus()}));
+    loadProducts().catch(error=>setError(`工作台载入失败：${error.message}`));
+  </script>
+</body>
+</html>

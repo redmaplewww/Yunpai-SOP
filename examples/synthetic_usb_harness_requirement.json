@@ -1,0 +1,28 @@
+{
+  "title": "Synthetic USB-C to USB-A Diagnostic Jumper",
+  "drawing_no": "SYN-USB-180-A",
+  "revision": "A0",
+  "units": "mm",
+  "sheet": {"width": 420, "height": 297, "format": "A3 landscape"},
+  "assembly": {
+    "overall_length": 180,
+    "cable_od": 4.2,
+    "jacket": "Matte black TPE",
+    "left_connector": "USB Type-C male diagnostic plug",
+    "right_connector": "USB Type-A male plug",
+    "left_body": {"width": 18, "height": 32, "nose_width": 9.4, "nose_height": 7.2},
+    "right_body": {"width": 20, "height": 38, "nose_width": 13.0, "nose_height": 6.0}
+  },
+  "pcb": {
+    "width": 42,
+    "height": 20,
+    "pad_pitch": 1.0,
+    "signal_count": 16,
+    "via_count": 12
+  },
+  "notes": [
+    "This is a synthetic drawing created from parameters for route feasibility testing.",
+    "It is not traced from the reference PDFs and does not represent an existing product.",
+    "Critical manufacturing drawings still require engineer review."
+  ]
+}

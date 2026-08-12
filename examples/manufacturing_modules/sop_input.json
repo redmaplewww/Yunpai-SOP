@@ -1,0 +1,23 @@
+{
+  "product_name": "USB-C 1M 黑色零售数据线",
+  "part_no": "FG-USBC-1M-BLK",
+  "document_no": "SOP-USBC-DRAFT-001",
+  "drawing_no": "TBD",
+  "station": "包装工位（待现场确认）",
+  "requirement_text": "来料核对 -> 线材盘绕 -> 扎带固定 -> 装 PE 袋 -> 标签检查 -> 装箱",
+  "bom_items": [
+    {"item_no": "1", "material_code": "TBD", "name": "USB-C 线材", "quantity": "1 PCS"},
+    {"item_no": "2", "material_code": "TBD", "name": "PE 袋", "quantity": "1 PCS"}
+  ],
+  "routing_steps": [
+    {"name": "来料核对", "type": "inspection"},
+    {"name": "线材盘绕", "type": "process"},
+    {"name": "扎带固定", "type": "process"},
+    {"name": "装 PE 袋", "type": "process"},
+    {"name": "标签检查", "type": "inspection"},
+    {"name": "装箱", "type": "process"}
+  ],
+  "run_id": "usb-c-sop-demo",
+  "out_dir": "outputs/manufacturing_modules/sop_drawing",
+  "use_model": false
+}

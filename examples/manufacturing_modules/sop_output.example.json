@@ -1,0 +1,32 @@
+{
+  "module_id": "sop_engineering_drawing",
+  "module_version": "1.0.0",
+  "status": "demo_not_for_release",
+  "data": {
+    "run_id": "usb-c-sop-demo",
+    "generation_sequence": [
+      "parse_requirement",
+      "fill_word_tables",
+      "build_structured_flowchart",
+      "render_center_flowchart_png",
+      "insert_png_into_process_flow_body_cell",
+      "validate_docx"
+    ],
+    "center_flowchart_target": "process_flow_body_table_cell_0_0"
+  },
+  "artifacts": {
+    "document_docx": "<absolute-output-path>/sop.docx",
+    "center_flowchart_png": "<absolute-output-path>/center_flowchart.png",
+    "manifest_json": "<absolute-output-path>/manifest.json",
+    "format_check_json": "<absolute-output-path>/format_check.json",
+    "parsed_sop_json": "<absolute-output-path>/parsed_sop.json"
+  },
+  "open_questions": [],
+  "warnings": [],
+  "guardrails": {
+    "draft_only": true,
+    "site_ie_ehs_oee_yield_trial_data_must_not_be_invented": true,
+    "automatic_shopfloor_release": false
+  },
+  "trace": {"run_id": "usb-c-sop-demo"}
+}

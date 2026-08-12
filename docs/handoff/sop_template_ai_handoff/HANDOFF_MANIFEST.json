@@ -1,0 +1,45 @@
+{
+  "schema_version": "2.0",
+  "package_id": "yunpai.sop_template.ai_handoff.v2",
+  "template_id": "yunpai.sop.hdmi-cable.multi-page.v1",
+  "workspace_root": ".",
+  "primary_instruction": "docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md",
+  "copyable_prompt": "docs/handoff/sop_template_ai_handoff/NEXT_SESSION_PROMPT.md",
+  "single_allowed_generator": "scripts/generate_sop_template_ai_handoff.py",
+  "required_arguments": ["--route-db", "--route-id", "--document-date", "--out-dir"],
+  "layout": {
+    "page_1": "A4 portrait complete process flowchart",
+    "following_pages": "A4 landscape work instructions repeated for every route step",
+    "rendered_page_formula": "1 + route_step_count",
+    "current_hdmi_route_step_count": 17,
+    "current_expected_pages": 18,
+    "step_order_each_instruction": "1,2,3 / 6,5,4"
+  },
+  "document": "SOP完整模板_HDMI线制作_草案.docx",
+  "expected_outputs": [
+    "SOP完整模板_HDMI线制作_草案.docx",
+    "center_flowchart.png",
+    "sop_template_manifest.json",
+    "sop_template_format_check.json",
+    "sop_template_validation.json"
+  ],
+  "web_document_service": "cad_ai/sop_knowledge/documents.py",
+  "forbidden_routes": [
+    "--content-profile hdmi-cable",
+    "VariableRouteDocxRenderer for final HDMI DOCX",
+    "generate_sop_package",
+    "sop_engineering_drawing",
+    "write_demo_sop_word_package"
+  ],
+  "guardrails": {
+    "status": "demo_not_for_release",
+    "signoff_values_blank": true,
+    "images_blank_until_human_confirmation": true,
+    "no_auto_release": true,
+    "no_fabricated_ie_or_process_facts": true
+  },
+  "legacy_usb_c_reference": {
+    "template_id": "yunpai.sop.usb_c_cable_packaging.two_page.v1",
+    "scope": "USB-C packaging historical reference only"
+  }
+}
