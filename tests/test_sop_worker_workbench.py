@@ -72,6 +72,41 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["reuse_eligible"], 0)
 
+    def test_knowledge_search_falls_back_to_confirmed_steps_in_current_route(self) -> None:
+        steps = self.store.get_route(self.route_id)["steps"]
+        confirmed_step = steps[0]
+        self.store.update_step_field(
+            confirmed_step["id"], "title", "HD-01 成品核对", reviewer="worker-01"
+        )
+        self.store.confirm_step(confirmed_step["id"], reviewer="worker-01")
+
+        by_code = self.store.search_confirmed_knowledge("HD-01", route_id=self.route_id)
+        by_chinese = self.store.search_confirmed_knowledge("成品核对", route_id=self.route_id)
+
+        self.assertEqual([item["step_code"] for item in by_code], [confirmed_step["step_code"]])
+        self.assertEqual(by_code[0]["source_scope"], "current_route")
+        self.assertEqual([item["step_code"] for item in by_chinese], [confirmed_step["step_code"]])
+        self.assertNotIn(steps[1]["id"], [item["route_step_id"] for item in by_code])
+
+    def test_knowledge_search_prioritizes_other_routes_before_current_route(self) -> None:
+        current_step = self.store.get_route(self.route_id)["steps"][0]
+        self.store.update_step_field(current_step["id"], "title", "共同核对动作", reviewer="worker-01")
+        self.store.confirm_step(current_step["id"], reviewer="worker-01")
+
+        other_identity = make_identity("WORKER-HISTORY")
+        self.store.upsert_product(other_identity, {"class": "cable", "feature": "history"})
+        other_route_id = self.store.create_route(make_route(other_identity, 1))
+        other_step = self.store.get_route(other_route_id)["steps"][0]
+        self.store.update_step_field(other_step["id"], "title", "共同核对动作", reviewer="worker-02")
+        self.store.confirm_step(other_step["id"], reviewer="worker-02")
+
+        matches = self.store.search_confirmed_knowledge("共同核对", route_id=self.route_id)
+
+        self.assertEqual([item["route_id"] for item in matches], [other_route_id, self.route_id])
+        self.assertEqual(
+            [item["source_scope"] for item in matches], ["other_route", "current_route"]
+        )
+
     def test_uploaded_image_is_draft_then_confirmed_and_rendered(self) -> None:
         step_id = self.store.get_route(self.route_id)["steps"][0]["id"]
         asset = self.store.upload_media_asset(
@@ -90,13 +125,36 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         with zipfile.ZipFile(rendered.docx_path) as archive:
             self.assertEqual(len([name for name in archive.namelist() if name.startswith("word/media/")]), 1)
 
-    def test_only_conversational_docx_page_is_packaged(self) -> None:
-        from cad_ai.sop_knowledge.web import SIMPLE_REVIEW_HTML
+    def test_deleting_uploaded_image_removes_all_step_links_and_file(self) -> None:
+        step_id = self.store.get_route(self.route_id)["steps"][0]["id"]
+        asset = self.store.upload_media_asset(
+            self.route_id,
+            original_name="待删除.png",
+            mime_type="image/png",
+            data=PNG_1X1,
+            uploaded_by="worker-03",
+        )
+        storage_path = Path(asset["storage_path"])
+        self.store.link_media_asset(step_id, asset["id"], caption="待删除绑定")
 
-        for text in ("DOCX 实时预览", "直接告诉 AI 哪里要改", "发送并更新 DOCX", "下载 DOCX"):
-            self.assertIn(text, SIMPLE_REVIEW_HTML)
-        for obsolete in ("打开完整版", "可变工序树", "content_json</label>"):
-            self.assertNotIn(obsolete, SIMPLE_REVIEW_HTML)
+        result = self.store.delete_media_asset(asset["id"])
+
+        self.assertEqual(result["removed_links"], 1)
+        route = self.store.get_route(self.route_id)
+        self.assertEqual(route["media_assets"], [])
+        self.assertEqual(route["media"], [])
+        self.assertFalse(storage_path.exists())
+
+    def test_worker_page_exposes_simple_natural_language_flow(self) -> None:
+        from cad_ai.sop_knowledge.web import REVIEW_HTML
+
+        for text in (
+            "直接说哪里要改", "理解并预览", "确认本工序", "相似历史内容",
+            "上传 PNG / JPEG", "删除图片", "确认当前资料", "要求修改",
+            "本路线已确认", "历史人工确认", "正式可复用",
+        ):
+            self.assertIn(text, REVIEW_HTML)
+        self.assertNotIn("content_json</label>", REVIEW_HTML)
 
 
 if __name__ == "__main__":

@@ -854,6 +854,35 @@ class SopKnowledgeStore:
                 raise KeyError(asset_id)
             return dict(row)
 
+    def delete_media_asset(self, asset_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT ma.*,r.status AS route_status
+                   FROM media_asset ma JOIN product_route r ON r.id=ma.route_id
+                   WHERE ma.id=?""",
+                (asset_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(asset_id)
+            if row["route_status"] == "approved":
+                raise sqlite3.IntegrityError("approved route media is immutable; create a revision")
+            link_count = int(connection.execute(
+                "SELECT COUNT(*) FROM step_media WHERE media_asset_id=?", (asset_id,)
+            ).fetchone()[0])
+            storage_path = Path(row["storage_path"])
+            connection.execute("DELETE FROM media_asset WHERE id=?", (asset_id,))
+            remaining_file_refs = int(connection.execute(
+                "SELECT COUNT(*) FROM media_asset WHERE storage_path=?", (str(storage_path),)
+            ).fetchone()[0])
+        if remaining_file_refs == 0 and storage_path.is_file():
+            storage_path.unlink()
+        return {
+            "status": "deleted",
+            "asset_id": asset_id,
+            "route_id": int(row["route_id"]),
+            "removed_links": link_count,
+        }
+
     def confirm_step(self, step_id: int, *, reviewer: str, comment: str = "") -> dict[str, Any]:
         if not reviewer.strip():
             raise ValueError("worker identity is required")
@@ -911,16 +940,19 @@ class SopKnowledgeStore:
         for token in tokens:
             like = f"%{token}%"
             params.extend([like, like, like, like])
-        route_filter = " AND route_id<>?" if route_id is not None else ""
+        scope_column = "'other_route' AS source_scope"
+        scope_order = ""
         if route_id is not None:
-            params.append(route_id)
+            scope_column = "CASE WHEN route_id=? THEN 'current_route' ELSE 'other_route' END AS source_scope"
+            scope_order = "CASE WHEN route_id=? THEN 1 ELSE 0 END,"
+            params = [route_id, *params, route_id]
         params.append(safe_limit)
         with self.connect() as connection:
             rows = connection.execute(
-                f"""SELECT id,route_id,route_version,product_code,process_family_code,step_code,title,searchable_text,
-                           confirmed_by,confirmed_at,reuse_eligible,snapshot_json
-                    FROM knowledge_fragment WHERE {' AND '.join(clauses)}{route_filter}
-                    ORDER BY reuse_eligible DESC,confirmed_at DESC LIMIT ?""",
+                f"""SELECT id,route_step_id,route_id,route_version,product_code,process_family_code,step_code,title,
+                           searchable_text,confirmed_by,confirmed_at,reuse_eligible,snapshot_json,{scope_column}
+                    FROM knowledge_fragment WHERE {' AND '.join(clauses)}
+                    ORDER BY {scope_order} reuse_eligible DESC,confirmed_at DESC LIMIT ?""",
                 params,
             )
             return [self._decode_json_columns(dict(row), ["snapshot_json"]) for row in rows]

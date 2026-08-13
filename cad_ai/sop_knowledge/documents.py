@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from typing import Any
 from .store import SopKnowledgeStore
 
 
-MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v1"
+MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v2"
 MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_repeated_landscape_work_instructions"
 MULTI_PAGE_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 
@@ -91,6 +92,12 @@ class SopDocumentService:
             return self.generate(route_id)
         if manifest.get("route_fingerprint") != self._route_fingerprint(route_id):
             return self.generate(route_id)
+        page_paths = [Path(item) for item in manifest.get("page_paths") or []]
+        if len(page_paths) != int(manifest.get("page_count") or 0) or not all(path.is_file() for path in page_paths):
+            page_paths = self._render_pdf_pages(Path(manifest["pdf_path"]), Path(manifest["pdf_path"]).parent)
+            manifest["page_paths"] = [str(path.resolve()) for path in page_paths]
+            manifest["page_count"] = len(page_paths)
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return self.public_manifest(manifest)
 
     def resolve_file(self, route_id: int, kind: str, *, page_no: int | None = None) -> tuple[Path, str, str]:
@@ -135,9 +142,12 @@ class SopDocumentService:
             staging_docx = staging_dir / "source.docx"
             staging_output = staging_dir / "rendered"
             shutil.copy2(docx_path, staging_docx)
+            powershell_exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            if not powershell_exe.is_file():
+                raise RuntimeError(f"DOCX 预览转换不可用：未找到 Windows PowerShell ({powershell_exe})")
             result = subprocess.run(
                 [
-                    "powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File",
+                    str(powershell_exe), "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File",
                     str(self.preview_script), "-InputPath", str(staging_docx),
                     "-OutputDirectory", str(staging_output),
                 ],
@@ -151,7 +161,7 @@ class SopDocumentService:
             if result.returncode == 0:
                 staging_pdfs = list(staging_output.glob("*.pdf"))
                 staging_pages = sorted(staging_output.glob("page-*.png"))
-                if len(staging_pdfs) == 1 and staging_pages:
+                if len(staging_pdfs) == 1:
                     shutil.copy2(staging_pdfs[0], output_dir / f"{docx_path.stem}.pdf")
                     for page in staging_pages:
                         shutil.copy2(page, output_dir / page.name)
@@ -166,13 +176,35 @@ class SopDocumentService:
         # from the known output directory instead of trusting those path bytes.
         pdf_files = sorted(output_dir.glob("*.pdf"))
         page_files = sorted(output_dir.glob("page-*.png"))
-        if len(pdf_files) != 1 or not page_files:
+        if len(pdf_files) != 1:
             raise RuntimeError("DOCX 预览转换产物不完整")
+        if not page_files:
+            page_files = self._render_pdf_pages(pdf_files[0], output_dir)
+        page_count = len(page_files)
+        if page_count < 1:
+            raise RuntimeError("DOCX 预览转换没有返回有效页数")
         return {
             "pdf_path": str(pdf_files[0].resolve()),
             "page_paths": [str(item.resolve()) for item in page_files],
-            "page_count": len(page_files),
+            "page_count": page_count,
         }
+
+    @staticmethod
+    def _render_pdf_pages(pdf_path: Path, output_dir: Path) -> list[Path]:
+        try:
+            import pymupdf
+        except ImportError as exc:
+            raise RuntimeError("PDF 分页预览不可用：缺少 PyMuPDF 依赖") from exc
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for artifact in output_dir.glob("page-*.png"):
+            artifact.unlink()
+        document = pymupdf.open(pdf_path)
+        try:
+            for index, page in enumerate(document, start=1):
+                page.get_pixmap(dpi=120, alpha=False).save(output_dir / f"page-{index:03d}.png")
+        finally:
+            document.close()
+        return sorted(output_dir.glob("page-*.png"))
 
     def _generate_template_package(self, route_id: int, output_dir: Path) -> dict[str, Any]:
         if not self.template_script.is_file():

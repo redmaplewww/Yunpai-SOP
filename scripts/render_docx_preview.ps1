@@ -19,12 +19,14 @@ $pdfPath = Join-Path $outputRoot ($stem + '.pdf')
 
 $word = $null
 $document = $null
+$pageCount = 0
 try {
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
     $word.DisplayAlerts = 0
     $document = $word.Documents.Open($inputFile, $false, $true)
     $document.ExportAsFixedFormat($pdfPath, 17)
+    $pageCount = [int]$document.ComputeStatistics(2)
 }
 finally {
     if ($document) { try { $document.Close($false) } catch { } }
@@ -44,16 +46,17 @@ if ($pdftocairo) {
     if ($LASTEXITCODE -ne 0) { throw "pdftocairo failed with exit code $LASTEXITCODE" }
 }
 else {
-    $pdftoppm = (Get-Command pdftoppm.cmd -ErrorAction Stop).Source
-    & $pdftoppm -png -r 110 $pdfPath (Join-Path $outputRoot 'page')
-    if ($LASTEXITCODE -ne 0) { throw "pdftoppm failed with exit code $LASTEXITCODE" }
+    $pdftoppm = Get-Command pdftoppm.exe -ErrorAction SilentlyContinue
+    if ($pdftoppm) {
+        & $pdftoppm.Source -png -r 110 $pdfPath (Join-Path $outputRoot 'page')
+        if ($LASTEXITCODE -ne 0) { throw "pdftoppm failed with exit code $LASTEXITCODE" }
+    }
 }
 
 $pages = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'page-*.png' | Sort-Object Name)
-if ($pages.Count -eq 0) { throw 'No DOCX preview pages were generated.' }
 
 [pscustomobject]@{
     pdf_path = $pdfPath
-    page_count = $pages.Count
+    page_count = if ($pages.Count -gt 0) { $pages.Count } else { $pageCount }
     page_paths = @($pages.FullName)
 } | ConvertTo-Json -Depth 3

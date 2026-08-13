@@ -308,7 +308,7 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
                     "UPDATE operation_template_version SET definition_json='{}' WHERE id=?", (version_id,)
                 )
 
-    def test_only_conversational_docx_workbench_is_exposed(self) -> None:
+    def test_proofing_and_full_workbenches_are_exposed(self) -> None:
         route_id = self.add_route("TEST-UI")
         server = create_builtin_server(self.store.path, "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -318,10 +318,12 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             simple_page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
             self.assertIn("DOCX 实时预览", simple_page)
             self.assertIn("发送并更新 DOCX", simple_page)
-            self.assertNotIn("打开完整版", simple_page)
-            with self.assertRaises(urllib.error.HTTPError) as missing_workbench:
-                urllib.request.urlopen(base + "/workbench", timeout=5)
-            self.assertEqual(missing_workbench.exception.code, 404)
+            self.assertIn("打开完整版", simple_page)
+            self.assertIn('id="docPages"', simple_page)
+            self.assertIn("doc.page_urls", simple_page)
+            self.assertIn("scheduleDocumentRefresh", simple_page)
+            page = urllib.request.urlopen(base + "/workbench", timeout=5).read().decode("utf-8")
+            self.assertIn("可变工序树", page)
             payload = json.loads(urllib.request.urlopen(base + f"/api/routes/{route_id}", timeout=5).read())
             self.assertEqual(payload["route"]["product_code"], "TEST-UI")
             self.assertEqual(len(payload["steps"]), 7)
