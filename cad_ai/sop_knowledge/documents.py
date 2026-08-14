@@ -8,14 +8,16 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .store import SopKnowledgeStore
 
+CURRENT_PREVIEW_DIR_NAME = "preview-current"
 
-MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v2"
+MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
 MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_repeated_landscape_work_instructions"
 MULTI_PAGE_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 
@@ -38,19 +40,48 @@ class SopDocumentService:
         lock = self._lock_for(route_id)
         with lock:
             output_dir = self.root / f"route_{route_id}"
-            preview_dir = output_dir / "preview"
+            # Keep live artifacts separate from stale legacy preview folders.
+            preview_dir = output_dir / CURRENT_PREVIEW_DIR_NAME
             template_dir = output_dir / "template_package"
             output_dir.mkdir(parents=True, exist_ok=True)
             preview_dir.mkdir(parents=True, exist_ok=True)
             template_dir.mkdir(parents=True, exist_ok=True)
             rendered = self._generate_template_package(route_id, template_dir)
             docx_path = Path(rendered["document_docx"])
-            preview = self._render_preview(docx_path, preview_dir)
             version_token = hashlib.sha256(docx_path.read_bytes()).hexdigest()[:16]
             route_fingerprint = self._route_fingerprint(route_id)
             route_payload = self.store.get_route(route_id)
             route = route_payload["route"]
             generated_at = datetime.now(timezone.utc).isoformat()
+            try:
+                preview = self._render_preview(
+                    docx_path,
+                    preview_dir,
+                    expected_page_count=int(rendered["expected_page_count"]),
+                )
+            except Exception as exc:
+                failure = {
+                    "route_id": route_id,
+                    "route_version": route["version"],
+                    "product_code": route["product_code"],
+                    "generated_at": generated_at,
+                    "version_token": version_token,
+                    "route_fingerprint": route_fingerprint,
+                    "template_id": rendered["template_id"],
+                    "layout_mode": MULTI_PAGE_LAYOUT_MODE,
+                    "docx_path": str(docx_path.resolve()),
+                    "page_count": 0,
+                    "expected_page_count": rendered["expected_page_count"],
+                    "validation_path": rendered["validation_json"],
+                    "media_count": len(route_payload.get("media") or []),
+                    "status": "preview_failed",
+                    "preview_source": "generated_docx",
+                    "preview_status": "failed",
+                    "preview_error": self._friendly_preview_error(exc),
+                    "preview_error_detail": str(exc),
+                }
+                self._write_json(self._preview_failure_path(route_id), failure)
+                return self.public_failure(failure)
             manifest = {
                 "route_id": route_id,
                 "route_version": route["version"],
@@ -74,12 +105,14 @@ class SopDocumentService:
                 raise RuntimeError(
                     f"SOP 页数不符合模板：应为 {rendered['expected_page_count']} 页，实际为 {preview['page_count']} 页"
                 )
-            (output_dir / "document_manifest.json").write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            self._write_json(output_dir / "document_manifest.json", manifest)
+            self._preview_failure_path(route_id).unlink(missing_ok=True)
             return self.public_manifest(manifest)
 
     def latest(self, route_id: int, *, generate_if_missing: bool = True) -> dict[str, Any]:
+        failure = self._current_preview_failure(route_id)
+        if failure:
+            return self.public_failure(failure)
         manifest_path = self.root / f"route_{route_id}" / "document_manifest.json"
         if not manifest_path.exists():
             if not generate_if_missing:
@@ -88,7 +121,10 @@ class SopDocumentService:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("template_id") != MULTI_PAGE_TEMPLATE_ID or manifest.get("layout_mode") != MULTI_PAGE_LAYOUT_MODE:
             return self.generate(route_id)
-        if not Path(manifest["docx_path"]).is_file() or not Path(manifest["pdf_path"]).is_file():
+        preview_path = Path(manifest["pdf_path"])
+        if preview_path.parent.name != CURRENT_PREVIEW_DIR_NAME:
+            return self.generate(route_id)
+        if not self._is_readable_file(Path(manifest["docx_path"])) or not self._is_readable_file(preview_path):
             return self.generate(route_id)
         if manifest.get("route_fingerprint") != self._route_fingerprint(route_id):
             return self.generate(route_id)
@@ -98,12 +134,26 @@ class SopDocumentService:
             manifest["page_paths"] = [str(path.resolve()) for path in page_paths]
             manifest["page_count"] = len(page_paths)
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        elif not all(self._is_readable_file(path) for path in page_paths):
+            return self.generate(route_id)
         return self.public_manifest(manifest)
 
     def resolve_file(self, route_id: int, kind: str, *, page_no: int | None = None) -> tuple[Path, str, str]:
+        # Ensure legacy, unreadable artifacts are rebuilt before FileResponse opens them.
+        self.latest(route_id, generate_if_missing=True)
+        failure = self._current_preview_failure(route_id)
+        if failure:
+            if kind == "docx":
+                return Path(failure["docx_path"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"SOP_{failure['product_code']}.docx"
+            raise RuntimeError(failure["preview_error"])
         manifest_path = self.root / f"route_{route_id}" / "document_manifest.json"
         if not manifest_path.exists():
             self.generate(route_id)
+            failure = self._current_preview_failure(route_id)
+            if failure:
+                if kind == "docx":
+                    return Path(failure["docx_path"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"SOP_{failure['product_code']}.docx"
+                raise RuntimeError(failure["preview_error"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if kind == "docx":
             return Path(manifest["docx_path"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"SOP_{manifest['product_code']}.docx"
@@ -115,6 +165,17 @@ class SopDocumentService:
                 raise KeyError(page_no)
             return Path(paths[page_no - 1]), "image/png", f"page-{page_no}.png"
         raise ValueError("unsupported document asset")
+
+    @staticmethod
+    def _is_readable_file(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        try:
+            with path.open("rb"):
+                pass
+        except OSError:
+            return False
+        return True
 
     @staticmethod
     def public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -132,12 +193,34 @@ class SopDocumentService:
             "page_urls": [f"/api/routes/{route_id}/documents/pages/{index}.png?v={token}" for index in range(1, int(manifest["page_count"]) + 1)],
         }
 
-    def _render_preview(self, docx_path: Path, output_dir: Path) -> dict[str, Any]:
+    @staticmethod
+    def public_failure(failure: dict[str, Any]) -> dict[str, Any]:
+        route_id = failure["route_id"]
+        token = failure["version_token"]
+        return {
+            key: failure[key]
+            for key in (
+                "route_id", "route_version", "product_code", "generated_at", "version_token",
+                "page_count", "media_count", "status", "preview_source", "template_id", "layout_mode",
+                "preview_status", "preview_error",
+            )
+        } | {
+            "docx_url": f"/api/routes/{route_id}/documents/latest.docx?v={token}",
+            "preview_url": "",
+            "page_urls": [],
+        }
+
+    def _render_preview(
+        self,
+        docx_path: Path,
+        output_dir: Path,
+        *,
+        expected_page_count: int | None = None,
+    ) -> dict[str, Any]:
         if not self.preview_script.is_file():
             raise FileNotFoundError(f"DOCX preview script is missing: {self.preview_script}")
-        for artifact in [*output_dir.glob("*.pdf"), *output_dir.glob("page-*.png")]:
-            artifact.unlink()
-        with tempfile.TemporaryDirectory(prefix="sop_docx_preview_") as staging_value:
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".preview-stage-", dir=output_dir.parent) as staging_value:
             staging_dir = Path(staging_value)
             staging_docx = staging_dir / "source.docx"
             staging_output = staging_dir / "rendered"
@@ -158,36 +241,83 @@ class SopDocumentService:
                 errors="replace",
                 timeout=120,
             )
-            if result.returncode == 0:
-                staging_pdfs = list(staging_output.glob("*.pdf"))
-                staging_pages = sorted(staging_output.glob("page-*.png"))
-                if len(staging_pdfs) == 1:
-                    shutil.copy2(staging_pdfs[0], output_dir / f"{docx_path.stem}.pdf")
-                    for page in staging_pages:
-                        shutil.copy2(page, output_dir / page.name)
-        if result.returncode != 0:
-            raise RuntimeError("DOCX 已生成，但预览转换失败：" + (result.stderr.strip() or "Word/PDF 转换不可用"))
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("DOCX 预览转换没有返回有效结果") from exc
-        # PowerShell 5.1 can encode an absolute directory containing Chinese
-        # characters with the active console code page. Resolve the artifacts
-        # from the known output directory instead of trusting those path bytes.
+            if result.returncode != 0:
+                raise RuntimeError("DOCX 已生成，但预览转换失败：" + (result.stderr.strip() or "Word/PDF 转换不可用"))
+            try:
+                json.loads(result.stdout)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("DOCX 预览转换没有返回有效结果") from exc
+            # PowerShell 5.1 can encode Chinese absolute paths with its active
+            # code page. Resolve and validate artifacts from the staging folder.
+            pdf_files = sorted(staging_output.glob("*.pdf"))
+            if len(pdf_files) != 1:
+                raise RuntimeError("DOCX 预览转换产物不完整")
+            page_files = sorted(staging_output.glob("page-*.png"))
+            if not page_files:
+                page_files = self._render_pdf_pages(pdf_files[0], staging_output)
+            page_count = len(page_files)
+            if page_count < 1:
+                raise RuntimeError("DOCX 预览转换没有返回有效页数")
+            if expected_page_count is not None and page_count != expected_page_count:
+                raise RuntimeError(f"SOP 页数不符合模板：应为 {expected_page_count} 页，实际为 {page_count} 页")
+            target_pdf = staging_output / f"{docx_path.stem}.pdf"
+            if pdf_files[0] != target_pdf:
+                pdf_files[0].replace(target_pdf)
+            self._publish_preview_directory(staging_output, output_dir)
         pdf_files = sorted(output_dir.glob("*.pdf"))
         page_files = sorted(output_dir.glob("page-*.png"))
-        if len(pdf_files) != 1:
-            raise RuntimeError("DOCX 预览转换产物不完整")
-        if not page_files:
-            page_files = self._render_pdf_pages(pdf_files[0], output_dir)
-        page_count = len(page_files)
-        if page_count < 1:
-            raise RuntimeError("DOCX 预览转换没有返回有效页数")
         return {
             "pdf_path": str(pdf_files[0].resolve()),
             "page_paths": [str(item.resolve()) for item in page_files],
-            "page_count": page_count,
+            "page_count": len(page_files),
         }
+
+    @staticmethod
+    def _publish_preview_directory(candidate: Path, output_dir: Path) -> None:
+        backup = output_dir.parent / f".{output_dir.name}-backup-{uuid.uuid4().hex}"
+        had_previous = output_dir.exists()
+        if had_previous:
+            os.replace(output_dir, backup)
+        try:
+            os.replace(candidate, output_dir)
+        except Exception:
+            if had_previous and backup.exists() and not output_dir.exists():
+                os.replace(backup, output_dir)
+            raise
+        finally:
+            if backup.exists():
+                shutil.rmtree(backup, ignore_errors=True)
+
+    def _preview_failure_path(self, route_id: int) -> Path:
+        return self.root / f"route_{route_id}" / "preview_failure.json"
+
+    def _current_preview_failure(self, route_id: int) -> dict[str, Any] | None:
+        path = self._preview_failure_path(route_id)
+        if not path.is_file():
+            return None
+        try:
+            failure = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if failure.get("route_fingerprint") != self._route_fingerprint(route_id):
+            return None
+        if not Path(str(failure.get("docx_path") or "")).is_file():
+            return None
+        return failure
+
+    @staticmethod
+    def _friendly_preview_error(error: Exception) -> str:
+        detail = str(error)
+        if any(token in detail for token in ("REGDB_E_CLASSNOTREG", "NoCOMClassIdentified", "Class not registered")):
+            return "DOCX 已生成并可下载，但当前电脑没有可用的 Microsoft Word 预览转换组件。请安装或修复 Word 后重试预览。"
+        return "DOCX 已生成并可下载，但预览转换暂时不可用。请检查 Word/PDF 转换组件后重试。"
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
 
     @staticmethod
     def _render_pdf_pages(pdf_path: Path, output_dir: Path) -> list[Path]:

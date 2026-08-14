@@ -765,13 +765,19 @@ def build_route_sections(
         ),
         RouteSectionDraft(
             section_type="ie_timing",
-            content={"measured_time": None, "standard_time": None, "unit": "s", "source": "现场IE实测"},
+            content={
+                "单价": "",
+                "人数": "",
+                "standard_time": None,
+                "unit": "s",
+                "source": "现场IE实测",
+            },
             sources=[],
             unknowns=[unknown(
                 "ie_timing",
-                "资料未提供现场观测工时、宽放率和标准工时，禁止使用模板估算。",
+                "资料未提供经审核的单价、人数和标准工时，禁止使用模板估算。",
                 "IE工程师",
-                "现场时间研究原始记录、样本数和批准宽放规则",
+                "经审核的单价与人数依据、现场时间研究原始记录和批准规则",
             )],
         ),
         RouteSectionDraft(

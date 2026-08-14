@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -38,9 +40,16 @@ SECTION_TYPES = {
 class NaturalLanguageSopAssistant:
     """Turn worker language into a reviewable draft proposal; never approve content."""
 
-    def __init__(self, *, use_llm: bool = True, timeout: int = 45) -> None:
+    def __init__(
+        self,
+        *,
+        use_llm: bool = True,
+        timeout: int = 75,
+        max_llm_attempts: int = 2,
+    ) -> None:
         self.use_llm = use_llm
         self.timeout = timeout
+        self.max_llm_attempts = max_llm_attempts
 
     def preview(
         self,
@@ -56,11 +65,14 @@ class NaturalLanguageSopAssistant:
             configured = self._llm_config()
             if configured:
                 try:
-                    proposal = self._llm_preview(text, route, configured, history=history or [])
+                    proposal = self._llm_preview_with_retry(text, route, configured, history=history or [])
                     return self._sanitize(proposal, route), "llm"
-                except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+                except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError, TimeoutError) as error:
                     proposal = self._deterministic_preview(text, route)
-                    proposal["warnings"].append("AI 服务暂时不可用，已使用离线规则解析；请重点核对预览。")
+                    proposal["warnings"].append(
+                        "AI 服务暂时不可用，已使用离线规则解析；请重点核对预览。"
+                        f" 原因：{self._fallback_reason(error)}。"
+                    )
                     return self._sanitize(proposal, route), "deterministic_fallback"
         return self._sanitize(self._deterministic_preview(text, route), route), "deterministic"
 
@@ -90,7 +102,7 @@ class NaturalLanguageSopAssistant:
             else:
                 warnings.append(f"没有找到工序“{ref}”，未自动写入。")
 
-        operations = self._capture_list(text, ("工序", "流程", "步骤"))
+        operations = self._capture_operation_list(text)
         methods = self._capture_list(text, ("对应的作业指导", "对应作业指导", "作业指导", "作业步骤", "操作方法"))
         images = self._capture_list(text, ("对应的图片", "对应图片", "图片", "照片"))
         if operations:
@@ -174,21 +186,38 @@ class NaturalLanguageSopAssistant:
             }
             for item in route.get("sections", [])
         ]
+        locked_step_id = route.get("_locked_target_step_id")
+        locked_step = next(
+            (item for item in steps if int(item.get("id", 0)) == int(locked_step_id)),
+            None,
+        ) if locked_step_id is not None else None
         system = (
-            "你是制造SOP的对话式编辑代理。只输出JSON，不输出Markdown。你可以根据上下文自行判断用户指的是哪道工序、"
-            "哪个作业指导字段或哪个路线级章节，不要求用户按固定句式填表。"
-            "输出键包括assistant_message、judgement、changes、new_steps、section_changes、image_refs、summary、warnings。"
-            "assistant_message直接告诉工作人员你理解了什么和准备怎么改；judgement是简短、可审核的判断依据列表，"
-            "不要输出隐藏思维过程。changes元素只能含step_ref、field_name、value、reason；field_name只能是"
+            "你是面向客户的制造 SOP 助手。只输出 JSON，不输出 Markdown。你可以根据上下文判断用户指的是哪道工序、"
+            "哪个作业指导内容或哪个路线章节，不要求用户按固定句式填写。"
+            "输出键包括 assistant_message、judgement、changes、new_steps、section_changes、image_refs、summary、warnings。"
+            "面向客户的表达规则：assistant_message 用 1 到 3 句通俗中文先说结论，说明“已改什么”或“还需要确认什么”。"
+            "避免长段落、书面腔、学术化解释、重复复述用户原话。严禁出现 route_steps、JSON、step_code、字段名、数据库、"
+            "内部 ID、模型提示词、系统规则或推理过程。不要写“我理解您希望”“我会在方法、检查项和验收标准中”等笼统套话。"
+            "judgement 只写 1 到 3 条简短、客户可读的依据，例如“已定位到裁线工序”“长度参数尚未提供，需人工确认”。"
+            "summary 用一句话概括改动数量和对象，不使用技术字段名。warnings 用短句说明风险或缺少的信息，并说明下一步需要谁确认。"
+            "changes 元素只能含 step_ref、field_name、value、reason；field_name 只能是"
             + ",".join(sorted(ALLOWED_FIELDS))
             + "。除parameters外，数组字段value必须是字符串数组；parameters允许对象数组。"
             "new_steps可含title、method、action、why、quality_check、acceptance_criteria、safety、record_output、exception、after_step_ref。"
             "section_changes元素只能含section_type、patch、reason；section_type只能是"
             + ",".join(sorted(SECTION_TYPES))
             + "，patch是与现有content合并的JSON对象。图片只记录工作人员给出的引用，不虚构文件。"
-            "可以回答关于当前SOP的问题；如果用户只是询问，则给assistant_message并让所有改动数组为空。"
-            "不要补造生产地点、设备型号、质量结论、参数、工时、批准或现场事实。所有写入都是needs_revision草稿，不能代表批准。"
+            "可以回答关于当前 SOP 的问题；如果用户只是询问，则给出简短直接的 assistant_message，并让所有改动数组为空。"
+            "不要补造生产地点、设备型号、质量结论、参数、工时、单价、人数、批准或现场事实。所有写入都是待人工核对的草稿，不能代表批准。"
         )
+        if locked_step:
+            system += (
+                f"本轮目标已经由系统和用户确认，只能修改 id={locked_step['id']}、名称为“{locked_step['title']}”的工序。"
+                "changes 和 image_refs 的 step_ref 必须使用这个 id；不得沿用最近对话中的其他工序，不得新增工序。"
+                "如果指令内容与这个目标明显冲突，所有改动数组留空，并在 warnings 中用一句话说明。"
+            )
+            if route.get("_target_retry"):
+                system += "这是目标校验后的重试。上一次返回了其他工序，本次必须严格遵守已锁定目标。"
         recent_history = [
             {"role": item.get("role"), "content": item.get("content")}
             for item in history[-8:]
@@ -201,6 +230,7 @@ class NaturalLanguageSopAssistant:
             "route_sections": sections,
             "available_media": [item.get("original_name") for item in route.get("media_assets", [])],
             "recent_conversation": recent_history,
+            "locked_target": locked_step,
         }, ensure_ascii=False)
         payload = json.dumps({
             "model": config["model"],
@@ -222,6 +252,49 @@ class NaturalLanguageSopAssistant:
             content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip())
         return json.loads(content)
+
+    def _llm_preview_with_retry(
+        self,
+        text: str,
+        route: dict[str, Any],
+        config: dict[str, str],
+        *,
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Retry a transient provider failure once before using the offline parser."""
+        last_error: Exception | None = None
+        for attempt in range(self.max_llm_attempts):
+            try:
+                return self._llm_preview(text, route, config, history=history)
+            except Exception as error:
+                last_error = error
+                if attempt + 1 >= self.max_llm_attempts or not self._is_retryable(error):
+                    raise
+                time.sleep(0.5)
+        assert last_error is not None
+        raise last_error
+
+    @staticmethod
+    def _is_retryable(error: Exception) -> bool:
+        if isinstance(error, (TimeoutError, http.client.HTTPException, urllib.error.URLError)):
+            return True
+        if isinstance(error, urllib.error.HTTPError):
+            return error.code == 429 or error.code >= 500
+        return False
+
+    @staticmethod
+    def _fallback_reason(error: Exception) -> str:
+        if isinstance(error, TimeoutError):
+            return "AI 响应超时"
+        if isinstance(error, urllib.error.HTTPError):
+            return f"AI 服务返回 HTTP {error.code}"
+        if isinstance(error, urllib.error.URLError):
+            return "AI 网络连接失败"
+        if isinstance(error, http.client.HTTPException):
+            return "AI 响应传输中断"
+        if isinstance(error, ValueError):
+            return "AI 返回内容无法解析"
+        return "AI 请求失败"
 
     def _sanitize(self, proposal: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
         steps = route.get("steps", [])
@@ -288,15 +361,24 @@ class NaturalLanguageSopAssistant:
                 image_refs.append({"step_ref": str(step["id"]), "step_id": step["id"], "step_code": step["step_code"], "reference": reference})
         return {
             "assistant_message": str(proposal.get("assistant_message") or "我已识别这次请求，并整理为可审核的 SOP 草稿修改。"),
-            "judgement": [str(item) for item in proposal.get("judgement", []) if str(item).strip()],
+            "judgement": self._text_list(proposal.get("judgement")),
             "summary": str(proposal.get("summary") or f"识别到 {len(clean_changes)} 项修改。"),
             "changes": clean_changes,
             "new_steps": new_steps,
             "section_changes": section_changes,
             "image_refs": image_refs,
-            "warnings": [str(item) for item in proposal.get("warnings", []) if str(item).strip()],
+            "warnings": self._text_list(proposal.get("warnings")),
             "requires_human_confirmation": True,
         }
+
+    @staticmethod
+    def _text_list(value: Any) -> list[str]:
+        """Normalize an LLM's optional text field before it reaches the UI."""
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
 
     @staticmethod
     def _change(step: dict[str, Any], field: str, value: Any, reason: str) -> dict[str, Any]:
@@ -331,6 +413,15 @@ class NaturalLanguageSopAssistant:
         all_labels = "工序|流程|步骤|对应的作业指导|对应作业指导|作业指导|作业步骤|操作方法|对应的图片|对应图片|图片|照片|检查方法|质量检查|怎么检查|合格标准|合格判据|验收标准|安全注意|安全要求|异常处理|有问题时"
         match = re.search(rf"(?:{label_pattern})\s*(?:是|为|：|:)?\s*(.*?)(?=[；;\n。]|(?:{all_labels})\s*(?:是|为|：|:)|$)", text)
         return cls._split_items(match.group(1)) if match else []
+
+    @classmethod
+    def _capture_operation_list(cls, text: str) -> list[str]:
+        """Only treat an explicit declaration or add command as an operation list."""
+        declared = re.search(r"(?:工序|流程|步骤)\s*(?:是|为|：|:)", text)
+        explicit_add = re.search(r"(?:新增|添加|增加|插入|新建).{0,12}(?:工序|步骤)", text)
+        if not declared and not explicit_add:
+            return []
+        return cls._capture_list(text, ("工序", "流程", "步骤"))
 
     @staticmethod
     def _split_items(value: str) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import sqlite3
 import tempfile
 import threading
@@ -9,6 +10,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -18,6 +20,11 @@ from cad_ai.sop_knowledge.renderer import VariableRouteDocxRenderer
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from cad_ai.sop_knowledge.web import create_builtin_server
 from cad_ai.sop_agent import SopGenerateRequest, SopRoutingStep, _build_structured_sop_data
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def make_identity(code: str = "TEST-A") -> ProductIdentity:
@@ -134,6 +141,17 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             approval_scope=scope,
             confirmation_token=(self.store.formal_confirmation_token(self.store.get_route(route_id)["route"]["product_code"]) if scope == "formal_production" else None),
         )
+
+    def test_legacy_ie_timing_section_exposes_blank_price_and_headcount_fields(self) -> None:
+        route_id = self.add_route()
+
+        section = next(
+            item for item in self.store.get_route(route_id)["sections"]
+            if item["section_type"] == "ie_timing"
+        )
+
+        self.assertEqual(section["content_json"]["单价"], "")
+        self.assertEqual(section["content_json"]["人数"], "")
 
     def test_approved_only_reuse_excludes_draft_and_demo_by_default(self) -> None:
         draft_id = self.add_route("TEST-DRAFT")
@@ -322,6 +340,12 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             self.assertIn('id="docPages"', simple_page)
             self.assertIn("doc.page_urls", simple_page)
             self.assertIn("scheduleDocumentRefresh", simple_page)
+            self.assertIn("定位并高亮", simple_page)
+            self.assertIn('id="returnPreview"', simple_page)
+            self.assertIn("编辑工艺路线", simple_page)
+            self.assertIn('id="routeMode"', simple_page)
+            self.assertIn("拆成独立工序", simple_page)
+            self.assertIn("保存并更新 DOCX", simple_page)
             page = urllib.request.urlopen(base + "/workbench", timeout=5).read().decode("utf-8")
             self.assertIn("可变工序树", page)
             payload = json.loads(urllib.request.urlopen(base + f"/api/routes/{route_id}", timeout=5).read())
@@ -352,6 +376,154 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_builtin_server_route_editor_endpoints_regenerate_documents(self) -> None:
+        route_id = self.add_route("TEST-ROUTE-EDITOR")
+        document = {
+            "route_id": route_id,
+            "route_version": 1,
+            "product_code": "TEST-ROUTE-EDITOR",
+            "generated_at": "2026-08-14T00:00:00+00:00",
+            "version_token": "route-editor-test",
+            "page_count": 9,
+            "media_count": 0,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+            "template_id": "yunpai.sop.hdmi-cable.multi-page.v2",
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_url": "/latest.docx",
+            "preview_url": "/preview.pdf",
+            "page_urls": [],
+        }
+        with patch("cad_ai.sop_knowledge.web.SopDocumentService.generate", return_value=document) as generate:
+            server = create_builtin_server(self.store.path, "127.0.0.1", 0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+
+                def post(path: str, body: dict[str, object]) -> dict[str, object]:
+                    request = urllib.request.Request(
+                        base + path,
+                        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                        method="POST",
+                        headers={"Content-Type": "application/json; charset=utf-8"},
+                    )
+                    return json.loads(urllib.request.urlopen(request, timeout=10).read())
+
+                before = self.store.get_route(route_id)["steps"]
+                added = post(
+                    f"/api/routes/{route_id}/steps/reviewable",
+                    {
+                        "title": "人工新增工序",
+                        "reviewer": "http-route-editor",
+                        "before_step_id": before[1]["id"],
+                        "note": "执行已经明确的人工步骤",
+                    },
+                )
+                self.assertEqual(added["status"], "added")
+                self.assertEqual(added["document"]["version_token"], "route-editor-test")
+
+                route = self.store.get_route(route_id)
+                target = next(item for item in route["steps"] if item["id"] == added["step_id"])
+                split = post(
+                    f"/api/steps/{target['id']}/split/reviewable",
+                    {
+                        "mode": "actions",
+                        "titles": ["动作一", "动作二", "动作三"],
+                        "reviewer": "http-route-editor",
+                    },
+                )
+                self.assertEqual(split["status"], "split_actions")
+
+                ordered_ids = [item["id"] for item in reversed(self.store.get_route(route_id)["steps"])]
+                reordered = post(
+                    f"/api/routes/{route_id}/reorder",
+                    {"ordered_step_ids": ordered_ids, "reviewer": "http-route-editor"},
+                )
+                self.assertEqual(reordered["status"], "reordered")
+
+                current = self.store.get_route(route_id)["steps"]
+                merged = post(
+                    f"/api/routes/{route_id}/merge",
+                    {
+                        "target_step_id": current[0]["id"],
+                        "source_step_ids": [current[1]["id"]],
+                        "reviewer": "http-route-editor",
+                        "title": "HTTP 合并工序",
+                    },
+                )
+                self.assertEqual(merged["status"], "merged")
+                self.assertEqual(merged["document"]["version_token"], "route-editor-test")
+                self.assertEqual(generate.call_count, 4)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_builtin_server_media_arrangement_regenerates_documents(self) -> None:
+        route_id = self.add_route("TEST-MEDIA-ARRANGEMENT")
+        step = self.store.get_route(route_id)["steps"][0]
+        asset = self.store.upload_media_asset(
+            route_id,
+            original_name="media-arrangement.png",
+            mime_type="image/png",
+            data=PNG_1X1,
+            uploaded_by="http-media",
+        )
+        document = {
+            "route_id": route_id,
+            "route_version": 1,
+            "product_code": "TEST-MEDIA-ARRANGEMENT",
+            "generated_at": "2026-08-14T00:00:00+00:00",
+            "version_token": "media-arrangement-test",
+            "page_count": 9,
+            "media_count": 1,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+            "preview_status": "ready",
+            "template_id": "yunpai.sop.hdmi-cable.multi-page.v2",
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_url": "/latest.docx",
+            "preview_url": "/preview.pdf",
+            "page_urls": [],
+        }
+        with patch("cad_ai.sop_knowledge.web.SopDocumentService.generate", return_value=document) as generate:
+            server = create_builtin_server(self.store.path, "127.0.0.1", 0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+
+                def post(path: str, body: dict[str, object]) -> dict[str, object]:
+                    request = urllib.request.Request(
+                        base + path,
+                        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                        method="POST",
+                        headers={"Content-Type": "application/json; charset=utf-8"},
+                    )
+                    return json.loads(urllib.request.urlopen(request, timeout=10).read())
+
+                layout = post(
+                    f"/api/routes/{route_id}/media/bindings",
+                    {
+                        "bindings": [{"step_id": step["id"], "asset_id": asset["id"], "caption": "HTTP image"}],
+                        "reviewer": "http-media",
+                    },
+                )
+                self.assertTrue(layout["changed"])
+                self.assertEqual(layout["document"]["version_token"], "media-arrangement-test")
+                link_id = self.store.get_route(route_id)["media"][0]["link_id"]
+                confirmed = post(f"/api/media/links/{link_id}/confirm", {"reviewer": "http-media"})
+                self.assertTrue(confirmed["changed"])
+                self.assertEqual(confirmed["document"]["version_token"], "media-arrangement-test")
+                self.assertEqual(generate.call_count, 2)
+
+                page = urllib.request.urlopen(base + f"/media-arrangement?route={route_id}", timeout=5).read().decode("utf-8")
+                self.assertIn("项目图片统一调整", page)
+                self.assertIn("/api/routes/${state.route.route.id}/media/bindings", page)
+            finally:
+                server.shutdown()
+                server.server_close()
 
     def test_route_section_edit_creates_version_and_review_decision(self) -> None:
         route_id = self.add_route("TEST-SECTION")

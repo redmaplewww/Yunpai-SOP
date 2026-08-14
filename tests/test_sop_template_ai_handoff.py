@@ -24,6 +24,7 @@ from scripts.generate_sop_template_ai_handoff import (
     validate_document,
 )
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
+from cad_ai.sop_knowledge.models import RouteSectionDraft
 from tests.test_sop_knowledge_workflow import make_identity, make_route
 
 
@@ -90,6 +91,21 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             identity = make_identity("HDMI-ROUTE-TEST")
             store.upsert_product(identity, {"class": "cable"})
             route_id = store.create_route(make_route(identity, 3))
+            store.create_route_section(
+                route_id,
+                RouteSectionDraft(
+                    section_type="ie_timing",
+                    content={"单价": "15.50", "人数": "2", "source": "人工填写"},
+                ),
+            )
+            step = store.get_route(route_id)["steps"][1]
+            store.update_step_field(
+                step["id"],
+                "record_output",
+                ["首件记录", "巡检记录", "登记工单号和异常现象"],
+                reviewer="worker-01",
+                decision="needs_revision",
+            )
             result = generate_route_package(
                 root / "package",
                 document_date="2026-08-12",
@@ -103,13 +119,26 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             document = Document(result["document_docx"])
             self.assertEqual(len(document.sections), 2)
             self.assertEqual(len(document.tables), 16)
+            flow_ie_time = document.tables[2]
+            self.assertIn("单价", flow_ie_time.cell(1, 3).text)
+            self.assertIn("人数", flow_ie_time.cell(1, 4).text)
+            self.assertIn("15.50", flow_ie_time.cell(2, 3).text)
+            self.assertIn("2", flow_ie_time.cell(2, 4).text)
             for page_index in range(3):
                 base = 4 + page_index * 4
                 self.assertEqual(document.tables[base].cell(2, 3).text.strip(), "DRAFT")
+                work_ie_time = document.tables[base + 2]
+                self.assertIn("单价", work_ie_time.cell(1, 3).text)
+                self.assertIn("人数", work_ie_time.cell(1, 4).text)
+                self.assertIn("15.50", work_ie_time.cell(2, 3).text)
+                self.assertIn("2", work_ie_time.cell(2, 4).text)
                 self.assertEqual(
                     [document.tables[base + 3].cell(1, index).text.strip() for index in range(3)],
                     ["", "", ""],
                 )
+            second_instruction_body = document.tables[9]
+            self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 4).text)
+            self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 4).text)
 
     def test_route_backed_hdmi_embeds_only_confirmed_step_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
