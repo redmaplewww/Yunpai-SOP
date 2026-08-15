@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from cad_ai.sop_knowledge.nl_assistant import NaturalLanguageSopAssistant
-from cad_ai.sop_knowledge.models import RouteSectionDraft
+from cad_ai.sop_knowledge.models import RouteSectionDraft, RouteStepDraft
 from cad_ai.sop_knowledge.renderer import VariableRouteDocxRenderer
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
+from cad_ai.sop_knowledge.web import (
+    _confirm_media_and_regenerate,
+    _regenerate_document_after_route_change,
+    _save_media_layout_and_regenerate,
+)
 from tests.test_sop_knowledge_workflow import make_identity, make_route
 
 
@@ -51,6 +58,103 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual([item["field_name"] for item in proposal["changes"]], ["method", "method"])
         self.assertEqual(len(proposal["image_refs"]), 2)
         self.assertTrue(proposal["requires_human_confirmation"])
+
+    def test_offline_ambiguous_step_comment_never_creates_steps(self) -> None:
+        route = self.store.get_route(self.route_id)
+
+        proposal, parser_kind = NaturalLanguageSopAssistant(use_llm=False).preview(
+            "工序3我觉得不够齐全，需要补充一下",
+            route,
+        )
+
+        self.assertEqual(parser_kind, "deterministic")
+        self.assertEqual(proposal["changes"], [])
+        self.assertEqual(proposal["new_steps"], [])
+        self.assertIn("未识别出可安全写入的字段", " ".join(proposal["warnings"]))
+
+    def test_offline_explicit_new_step_request_can_create_one_step(self) -> None:
+        route = self.store.get_route(self.route_id)
+
+        proposal, _ = NaturalLanguageSopAssistant(use_llm=False).preview(
+            "新增工序：激光打标",
+            route,
+        )
+
+        self.assertEqual([item["title"] for item in proposal["new_steps"]], ["激光打标"])
+
+    def test_ai_timeout_retries_once_before_using_offline_fallback(self) -> None:
+        route = self.store.get_route(self.route_id)
+        assistant = NaturalLanguageSopAssistant(use_llm=True, timeout=1, max_llm_attempts=2)
+        llm_proposal = {
+            "assistant_message": "已理解，但需要补充具体字段。",
+            "judgement": ["用户未提供可安全写入的字段。"],
+            "summary": "仅回答，不写入草稿。",
+            "changes": [], "new_steps": [], "section_changes": [], "image_refs": [], "warnings": [],
+        }
+        with (
+            patch.object(assistant, "_llm_config", return_value={"api_key": "test", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(assistant, "_llm_preview", side_effect=[TimeoutError("slow"), llm_proposal]) as preview,
+            patch("cad_ai.sop_knowledge.nl_assistant.time.sleep"),
+        ):
+            proposal, parser_kind = assistant.preview("工序3我觉得不够齐全，需要补充一下", route)
+
+        self.assertEqual(parser_kind, "llm")
+        self.assertEqual(preview.call_count, 2)
+        self.assertEqual(proposal["changes"], [])
+        self.assertNotIn("离线规则", " ".join(proposal["warnings"]))
+
+    def test_ai_incomplete_read_retries_once_before_using_offline_fallback(self) -> None:
+        route = self.store.get_route(self.route_id)
+        assistant = NaturalLanguageSopAssistant(use_llm=True, timeout=1, max_llm_attempts=2)
+        llm_proposal = {
+            "assistant_message": "已理解，等待人工确认。",
+            "judgement": ["用户未提供可安全写入的字段。"],
+            "summary": "仅回答，不写入草稿。",
+            "changes": [], "new_steps": [], "section_changes": [], "image_refs": [], "warnings": [],
+        }
+        with (
+            patch.object(assistant, "_llm_config", return_value={"api_key": "test", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(assistant, "_llm_preview", side_effect=[http.client.IncompleteRead(b"x", 2), llm_proposal]) as preview,
+            patch("cad_ai.sop_knowledge.nl_assistant.time.sleep"),
+        ):
+            _, parser_kind = assistant.preview("工序3我觉得不够齐全，需要补充一下", route)
+
+        self.assertEqual(parser_kind, "llm")
+        self.assertEqual(preview.call_count, 2)
+
+    def test_ai_prompt_requires_plain_customer_facing_language(self) -> None:
+        source = Path(NaturalLanguageSopAssistant.__module__.replace(".", "/") + ".py")
+        if not source.is_file():
+            source = Path(__file__).resolve().parents[1] / "cad_ai" / "sop_knowledge" / "nl_assistant.py"
+        prompt_source = source.read_text(encoding="utf-8")
+
+        self.assertIn("面向客户的表达规则", prompt_source)
+        self.assertIn("避免长段落、书面腔、学术化解释", prompt_source)
+        self.assertIn("严禁出现 route_steps、JSON、step_code、字段名、数据库", prompt_source)
+
+    def test_sanitize_wraps_a_single_warning_string_as_one_warning(self) -> None:
+        route = self.store.get_route(self.route_id)
+        proposal = {
+            "assistant_message": "需要人工确认。",
+            "judgement": [], "summary": "未改动。", "changes": [], "new_steps": [],
+            "section_changes": [], "image_refs": [], "warnings": "设备型号尚未提供，请人工确认。",
+        }
+
+        clean = NaturalLanguageSopAssistant(use_llm=False)._sanitize(proposal, route)
+
+        self.assertEqual(clean["warnings"], ["设备型号尚未提供，请人工确认。"])
+
+    def test_sanitize_wraps_a_single_judgement_string_as_one_item(self) -> None:
+        route = self.store.get_route(self.route_id)
+        proposal = {
+            "assistant_message": "已定位。",
+            "judgement": "已定位到成品检验工序。", "summary": "未改动。",
+            "changes": [], "new_steps": [], "section_changes": [], "image_refs": [], "warnings": [],
+        }
+
+        clean = NaturalLanguageSopAssistant(use_llm=False)._sanitize(proposal, route)
+
+        self.assertEqual(clean["judgement"], ["已定位到成品检验工序。"])
 
     def test_proposal_apply_stays_unconfirmed_until_explicit_step_confirmation(self) -> None:
         route = self.store.get_route(self.route_id)
@@ -125,6 +229,80 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         with zipfile.ZipFile(rendered.docx_path) as archive:
             self.assertEqual(len([name for name in archive.namelist() if name.startswith("word/media/")]), 1)
 
+    def test_route_wide_media_layout_keeps_confirmed_images_and_marks_new_bindings_draft(self) -> None:
+        steps = self.store.get_route(self.route_id)["steps"]
+        first_asset = self.store.upload_media_asset(
+            self.route_id, original_name="confirmed-image.png", mime_type="image/png",
+            data=PNG_1X1, uploaded_by="worker-media",
+        )
+        second_asset = self.store.upload_media_asset(
+            self.route_id, original_name="new-image.png", mime_type="image/png",
+            data=PNG_1X1 + b"second", uploaded_by="worker-media",
+        )
+        self.store.link_media_asset(steps[0]["id"], first_asset["id"], caption="confirmed image")
+        self.store.confirm_step(steps[0]["id"], reviewer="worker-media")
+
+        saved = self.store.replace_route_media_bindings(
+            self.route_id,
+            [
+                {"step_id": steps[0]["id"], "asset_id": first_asset["id"], "caption": "confirmed image"},
+                {"step_id": steps[0]["id"], "asset_id": second_asset["id"], "caption": "new image"},
+            ],
+            reviewer="worker-media",
+        )
+
+        self.assertTrue(saved["changed"])
+        self.assertEqual(saved["added_links"], 1)
+        route = self.store.get_route(self.route_id)
+        self.assertEqual([item["asset_id"] for item in route["media"]], [first_asset["id"], second_asset["id"]])
+        self.assertEqual([item["link_state"] for item in route["media"]], ["confirmed", "draft"])
+        self.assertEqual(route["steps"][0]["review_state"], "needs_revision")
+
+        new_link = next(item for item in route["media"] if item["asset_id"] == second_asset["id"])
+        confirmed = self.store.confirm_media_link(new_link["link_id"], reviewer="worker-media")
+        self.assertTrue(confirmed["changed"])
+        self.assertEqual(confirmed["route_id"], self.route_id)
+
+        rendered = VariableRouteDocxRenderer(self.store).render(self.route_id, self.root / "route-media-layout")
+        self.assertEqual(rendered.media_count, 2)
+
+    def test_media_layout_and_confirmation_regenerate_latest_document(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+        asset = self.store.upload_media_asset(
+            self.route_id, original_name="pending-image.png", mime_type="image/png",
+            data=PNG_1X1, uploaded_by="worker-document",
+        )
+        documents = Mock()
+        documents.generate.return_value = {
+            "route_id": self.route_id,
+            "version_token": "media-version-token",
+            "page_count": 4,
+            "preview_status": "ready",
+        }
+
+        saved = _save_media_layout_and_regenerate(
+            self.store,
+            documents,
+            route_id=self.route_id,
+            bindings=[{"step_id": step["id"], "asset_id": asset["id"], "caption": "pending image"}],
+            reviewer="worker-document",
+        )
+        self.assertTrue(saved["changed"])
+        self.assertEqual(saved["document"]["version_token"], "media-version-token")
+        documents.generate.assert_called_once_with(self.route_id)
+
+        link_id = self.store.get_route(self.route_id)["media"][0]["link_id"]
+        documents.generate.reset_mock()
+        confirmed = _confirm_media_and_regenerate(
+            self.store,
+            documents,
+            link_id=link_id,
+            reviewer="worker-document",
+        )
+        self.assertTrue(confirmed["changed"])
+        self.assertEqual(confirmed["document"]["version_token"], "media-version-token")
+        documents.generate.assert_called_once_with(self.route_id)
+
     def test_deleting_uploaded_image_removes_all_step_links_and_file(self) -> None:
         step_id = self.store.get_route(self.route_id)["steps"][0]["id"]
         asset = self.store.upload_media_asset(
@@ -145,15 +323,289 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual(route["media"], [])
         self.assertFalse(storage_path.exists())
 
+    def test_route_editor_adds_and_reorders_reviewable_steps(self) -> None:
+        original = self.store.get_route(self.route_id)["steps"]
+        result = self.store.add_reviewable_step(
+            self.route_id,
+            title="剥皮与芯线整理",
+            reviewer="worker-route",
+            before_step_id=original[1]["id"],
+        )
+
+        added_route = self.store.get_route(self.route_id)
+        self.assertEqual(
+            [step["title"] for step in added_route["steps"]],
+            [original[0]["title"], "剥皮与芯线整理", original[1]["title"], original[2]["title"]],
+        )
+        added = next(step for step in added_route["steps"] if step["id"] == result["step_id"])
+        self.assertEqual(added["review_state"], "needs_revision")
+        self.assertTrue(added["unknowns_json"][0]["blocking"])
+        self.assertEqual(result["page_number"], 3)
+
+        ordered_ids = [step["id"] for step in added_route["steps"]]
+        reordered = self.store.reorder_steps(
+            self.route_id,
+            [ordered_ids[-1], *ordered_ids[:-1]],
+            reviewer="worker-route",
+        )
+        final = self.store.get_route(self.route_id)["steps"]
+        self.assertTrue(reordered["changed"])
+        self.assertEqual(final[0]["id"], ordered_ids[-1])
+        self.assertEqual([step["sequence_no"] for step in final], [1.0, 2.0, 3.0, 4.0])
+        self.assertTrue(all(step["review_state"] == "needs_revision" for step in final))
+
+    def test_route_editor_splits_actions_without_pages_or_into_independent_steps(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][1]
+        before_count = len(self.store.get_route(self.route_id)["steps"])
+
+        actions = self.store.split_step_actions(
+            step["id"],
+            titles=["检查设备状态", "连接测试线", "执行电测并记录"],
+            reviewer="worker-route",
+        )
+        after_actions = self.store.get_route(self.route_id)["steps"]
+        changed = next(item for item in after_actions if item["id"] == step["id"])
+        self.assertEqual(len(after_actions), before_count)
+        self.assertEqual(changed["method_json"], ["检查设备状态", "连接测试线", "执行电测并记录"])
+        self.assertEqual(actions["page_number"], 3)
+
+        independent = self.store.split_step_independent(
+            step["id"],
+            titles=["设备状态检查", "测试线连接", "执行电测与记录"],
+            reviewer="worker-route",
+        )
+        after_independent = self.store.get_route(self.route_id)["steps"]
+        self.assertEqual(len(after_independent), before_count + 2)
+        self.assertEqual(
+            [item["title"] for item in after_independent[1:4]],
+            ["设备状态检查", "测试线连接", "执行电测与记录"],
+        )
+        self.assertEqual(len(independent["page_numbers"]), 3)
+        self.assertTrue(all(
+            next(item for item in after_independent if item["id"] == step_id)["review_state"] == "needs_revision"
+            for step_id in independent["affected_step_ids"]
+        ))
+
+    def test_route_editor_merge_preserves_all_fields_media_and_provenance(self) -> None:
+        steps = self.store.get_route(self.route_id)["steps"]
+        target, source = steps[0], steps[1]
+        self.store.update_step_field(
+            source["id"], "safety", ["来源工序安全要求"], reviewer="setup"
+        )
+        asset = self.store.upload_media_asset(
+            self.route_id,
+            original_name="合并来源.png",
+            mime_type="image/png",
+            data=PNG_1X1,
+            uploaded_by="worker-route",
+        )
+        self.store.link_media_asset(source["id"], asset["id"], caption="来源图片")
+        with self.store.connect() as connection:
+            connection.execute(
+                """INSERT INTO field_provenance(
+                       route_step_id,route_id,field_name,confidence,conflict_status,note
+                   ) VALUES(?,?,?,1.0,'clear',?)""",
+                (source["id"], self.route_id, "safety", "来源工序证据"),
+            )
+
+        merged = self.store.merge_steps(
+            self.route_id,
+            target["id"],
+            [source["id"]],
+            reviewer="worker-route",
+            title="合并后的受控工序",
+        )
+
+        route = self.store.get_route(self.route_id)
+        self.assertEqual(len(route["steps"]), 2)
+        target_after = next(item for item in route["steps"] if item["id"] == target["id"])
+        self.assertEqual(target_after["title"], "合并后的受控工序")
+        self.assertIn("来源工序安全要求", target_after["safety_json"])
+        self.assertEqual(target_after["review_state"], "needs_revision")
+        self.assertEqual(route["media"][0]["route_step_id"], target["id"])
+        self.assertTrue(any(item["route_step_id"] == target["id"] for item in route["provenance"]))
+        self.assertEqual(merged["removed_step_id"], source["id"])
+
+    def test_route_editor_mutations_reject_approved_routes(self) -> None:
+        steps = self.store.get_route(self.route_id)["steps"]
+        with self.store.connect() as connection:
+            connection.execute("UPDATE product_route SET status='approved' WHERE id=?", (self.route_id,))
+
+        operations = (
+            lambda: self.store.add_reviewable_step(
+                self.route_id, title="不可新增", reviewer="worker-route"
+            ),
+            lambda: self.store.reorder_steps(
+                self.route_id, [item["id"] for item in reversed(steps)], reviewer="worker-route"
+            ),
+            lambda: self.store.split_step_actions(
+                steps[0]["id"], titles=["动作一", "动作二"], reviewer="worker-route"
+            ),
+            lambda: self.store.merge_steps(
+                self.route_id, steps[0]["id"], [steps[1]["id"]], reviewer="worker-route"
+            ),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                Exception, "approved route is immutable"
+            ):
+                operation()
+
+    def test_step_delete_can_be_undone_with_original_position_and_children(self) -> None:
+        original = self.store.get_route(self.route_id)["steps"]
+        parent = original[1]
+        child_id = self.store.add_step(
+            self.route_id,
+            RouteStepDraft(
+                step_code="UNDO-CHILD",
+                sequence_no=2.5,
+                parent_step_code=parent["step_code"],
+                title="待恢复子步骤",
+                action="执行待恢复子步骤动作",
+                why="验证父子工序能够一起恢复",
+                method=["执行子步骤"],
+                quality_check=["检查子步骤"],
+                acceptance_criteria=["子步骤符合要求"],
+                record_output=["记录子步骤"],
+                exception=["异常时停止"],
+            ),
+        )
+
+        deleted = self.store.delete_step(parent["id"], deleted_by="worker-undo")
+
+        visible_ids = [step["id"] for step in self.store.get_route(self.route_id)["steps"]]
+        self.assertNotIn(parent["id"], visible_ids)
+        self.assertNotIn(child_id, visible_ids)
+        self.assertEqual(deleted["affected_step_count"], 2)
+        self.assertEqual(len(self.store.list_recent_step_deletions(self.route_id)), 1)
+
+        restored = self.store.restore_step_deletion(deleted["deletion_token"], reviewer="worker-undo")
+        restored_route = self.store.get_route(self.route_id)
+        restored_ids = [step["id"] for step in restored_route["steps"]]
+        self.assertIn(parent["id"], restored_ids)
+        self.assertIn(child_id, restored_ids)
+        self.assertEqual(restored["restored_step_count"], 2)
+        restored_child = next(step for step in restored_route["steps"] if step["id"] == child_id)
+        self.assertEqual(restored_child["parent_step_id"], parent["id"])
+        self.assertEqual(self.store.list_recent_step_deletions(self.route_id), [])
+
+    def test_deleted_step_media_and_knowledge_are_hidden_then_restored(self) -> None:
+        step_id = self.store.get_route(self.route_id)["steps"][0]["id"]
+        self.store.update_step_field(
+            step_id,
+            "title",
+            "可恢复知识工序",
+            reviewer="worker-undo",
+            decision="needs_revision",
+        )
+        asset = self.store.upload_media_asset(
+            self.route_id,
+            original_name="可恢复图片.png",
+            mime_type="image/png",
+            data=PNG_1X1,
+            uploaded_by="worker-undo",
+        )
+        self.store.link_media_asset(step_id, asset["id"], caption="可恢复绑定")
+        self.store.confirm_step(step_id, reviewer="worker-undo")
+        self.assertEqual(len(self.store.search_confirmed_knowledge("可恢复知识工序")), 1)
+
+        deleted = self.store.delete_step(step_id, deleted_by="worker-undo")
+
+        self.assertEqual(self.store.get_route(self.route_id)["media"], [])
+        self.assertEqual(self.store.search_confirmed_knowledge("可恢复知识工序"), [])
+
+        self.store.restore_step_deletion(deleted["deletion_token"], reviewer="worker-undo")
+
+        self.assertEqual(len(self.store.get_route(self.route_id)["media"]), 1)
+        self.assertEqual(len(self.store.search_confirmed_knowledge("可恢复知识工序")), 1)
+
+    def test_step_delete_preserves_approved_routes(self) -> None:
+        approved_step = self.store.get_route(self.route_id)["steps"][0]["id"]
+
+        with self.store.connect() as connection:
+            connection.execute("UPDATE product_route SET status='approved' WHERE id=?", (self.route_id,))
+        with self.assertRaisesRegex(Exception, "approved route is immutable"):
+            self.store.delete_step(approved_step, deleted_by="worker-undo")
+
+    def test_completed_delete_is_reported_when_preview_regeneration_fails(self) -> None:
+        documents = Mock()
+        documents.generate.side_effect = RuntimeError("Word/PDF 转换不可用")
+
+        result = _regenerate_document_after_route_change(
+            documents,
+            {"status": "deleted", "route_id": self.route_id, "deletion_token": "undo-token"},
+        )
+
+        self.assertEqual(result["status"], "deleted")
+        self.assertEqual(result["deletion_token"], "undo-token")
+        self.assertIsNone(result["document"])
+        self.assertEqual(result["document_status"], "generation_failed")
+        self.assertIn("Word/PDF 转换不可用", result["document_error"])
+
+        documents.generate.side_effect = RuntimeError("DOCX 已生成，但预览转换失败：Word 不可用")
+        preview_failure = _regenerate_document_after_route_change(
+            documents,
+            {"status": "restored", "route_id": self.route_id},
+        )
+        self.assertEqual(preview_failure["document_status"], "preview_failed")
+
     def test_worker_page_exposes_simple_natural_language_flow(self) -> None:
-        from cad_ai.sop_knowledge.web import REVIEW_HTML
+        from cad_ai.sop_knowledge.web import MEDIA_ARRANGEMENT_HTML, REVIEW_HTML
 
         for text in (
             "直接说哪里要改", "理解并预览", "确认本工序", "相似历史内容",
-            "上传 PNG / JPEG", "删除图片", "确认当前资料", "要求修改",
+            "项目图片上传", "删除图片", "确认当前资料", "要求修改",
             "本路线已确认", "历史人工确认", "正式可复用",
         ):
             self.assertIn(text, REVIEW_HTML)
+        self.assertIn("data-delete-step", REVIEW_HTML)
+        self.assertIn("项目图片统一调整", REVIEW_HTML)
+        self.assertIn("/media-arrangement?route=", REVIEW_HTML)
+        self.assertIn("完整工序图", MEDIA_ARRANGEMENT_HTML)
+        self.assertIn("/media/bindings", MEDIA_ARRANGEMENT_HTML)
+        self.assertIn("/api/media/links/${linkId}/confirm", MEDIA_ARRANGEMENT_HTML)
+        self.assertIn("每道工序最多绑定 6 张图片", MEDIA_ARRANGEMENT_HTML)
+        self.assertIn("renderInspectorOrderControls", MEDIA_ARRANGEMENT_HTML)
+        self.assertIn("data-move-link", MEDIA_ARRANGEMENT_HTML)
+        self.assertNotIn("scrollIntoView", MEDIA_ARRANGEMENT_HTML)
+        self.assertIn("已删除", REVIEW_HTML)
+        self.assertIn("最近删除", REVIEW_HTML)
+        self.assertIn("撤销", REVIEW_HTML)
+        simple_html = (
+            Path(__file__).resolve().parents[1]
+            / "cad_ai"
+            / "sop_knowledge"
+            / "simple_workbench.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn("const asList", simple_html)
+        self.assertIn("target-option", simple_html)
+        self.assertIn("data-candidate-step", simple_html)
+        self.assertIn("selected_step_id", simple_html)
+        self.assertIn("pending_message_id", simple_html)
+        self.assertIn("parts.every", simple_html)
+        self.assertIn("查看其他候选", simple_html)
+        self.assertIn("locate-change", simple_html)
+        self.assertIn('id="returnPreview"', simple_html)
+        self.assertIn("changePageNumber", simple_html)
+        self.assertIn("page_number", simple_html)
+        self.assertIn("field_key", simple_html)
+        self.assertIn("scrollPreviewTo", simple_html)
+        self.assertIn('id="routeMode"', simple_html)
+        self.assertIn('id="routeEditor"', simple_html)
+        self.assertIn(".chat[hidden]{display:none}", simple_html)
+        self.assertIn('id="retryPreview"', simple_html)
+        self.assertIn("retryDocumentPreview", simple_html)
+        self.assertIn("documentInfo?.preview_status==='failed'", simple_html)
+        self.assertIn("预览暂时不可用", simple_html)
+        self.assertIn("openAddRouteStep", simple_html)
+        self.assertIn("openSplitRouteStep", simple_html)
+        self.assertIn("openMergeRouteStep", simple_html)
+        self.assertIn("openDeleteRouteStep", simple_html)
+        self.assertIn("saveRouteOrder", simple_html)
+        self.assertIn("createRouteRevision", simple_html)
+        self.assertIn("/steps/reviewable", simple_html)
+        self.assertIn("/split/reviewable", simple_html)
+        self.assertNotIn("scrollIntoView", simple_html)
         self.assertNotIn("content_json</label>", REVIEW_HTML)
 
 

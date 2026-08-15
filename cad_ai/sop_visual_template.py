@@ -116,8 +116,8 @@ IE_TIME_STUDY_FIELDS = [
     "动作",
     "机器型号",
     "IE测量方法",
-    "观测次数",
-    "平均观测工时(s)",
+    "单价",
+    "人数",
     "评比系数",
     "宽放率",
     "标准工时(s)",
@@ -1943,7 +1943,7 @@ def _default_work_ie_time_study(step_slots: list[dict[str, Any]]) -> dict[str, A
         "fields": list(IE_TIME_STUDY_FIELDS),
         "rows": [_blank_ie_time_study_row(_slot_action_name(slot)) for slot in step_slots],
         "policy": {
-            "measurement_basis": "IE标准测时：观测工时 x 评比系数 x (1 + 宽放率)",
+            "measurement_basis": "单价、人数及标准工时均须由IE/授权人员按现场资料填写，不得由模板估算。",
             "dynamic_adjustment": "生产实绩回写后由IE/生产复核并更新标准工时",
             "release_requirement": "site_measured_or_human_locked",
         },
@@ -1971,24 +1971,22 @@ def _demo_process_ie_time_study(operations: list[str]) -> dict[str, Any]:
 
 def _demo_work_ie_time_study(step_slots: list[dict[str, Any]]) -> dict[str, Any]:
     demo_values = {
-        1: ("手动作业台-DEMO", "3", "6.0", "1.00", "10%", "6.6"),
-        2: ("检验台-DEMO", "3", "8.0", "1.00", "10%", "8.8"),
-        3: ("手动作业台-DEMO", "3", "10.0", "1.00", "10%", "11.0"),
-        4: ("扎线治具-DEMO", "3", "7.0", "1.00", "10%", "7.7"),
-        5: ("包装台-DEMO", "3", "6.0", "1.00", "10%", "6.6"),
-        6: ("包装台-DEMO", "3", "9.0", "1.00", "10%", "9.9"),
+        1: ("手动作业台-DEMO", "1.00", "10%", "6.6"),
+        2: ("检验台-DEMO", "1.00", "10%", "8.8"),
+        3: ("手动作业台-DEMO", "1.00", "10%", "11.0"),
+        4: ("扎线治具-DEMO", "1.00", "10%", "7.7"),
+        5: ("包装台-DEMO", "1.00", "10%", "6.6"),
+        6: ("包装台-DEMO", "1.00", "10%", "9.9"),
     }
     rows = []
     for slot in step_slots:
         slot_no = int(slot.get("slot_no") or 0)
-        machine, observations, average, rating, allowance, standard = demo_values.get(slot_no, ("DEMO", "3", "", "1.00", "10%", ""))
+        machine, rating, allowance, standard = demo_values.get(slot_no, ("DEMO", "", "", ""))
         row = _blank_ie_time_study_row(_slot_action_name(slot))
         row.update(
             {
                 "机器型号": machine,
                 "IE测量方法": "DEMO秒表测时",
-                "观测次数": observations,
-                "平均观测工时(s)": average,
                 "评比系数": rating,
                 "宽放率": allowance,
                 "标准工时(s)": standard,
@@ -2002,7 +2000,7 @@ def _demo_work_ie_time_study(step_slots: list[dict[str, Any]]) -> dict[str, Any]
         "fields": list(IE_TIME_STUDY_FIELDS),
         "rows": rows,
         "policy": {
-            "measurement_basis": "DEMO样例：观测工时 x 评比系数 x (1 + 宽放率)",
+            "measurement_basis": "DEMO样例；单价、人数及标准工时均须经现场资料和人工确认。",
             "release_requirement": "site_measured_or_human_locked",
         },
     }
@@ -2013,8 +2011,8 @@ def _blank_ie_time_study_row(action: str) -> dict[str, str]:
         "动作": action,
         "机器型号": "待填",
         "IE测量方法": "待IE实测",
-        "观测次数": "",
-        "平均观测工时(s)": "",
+        "单价": "",
+        "人数": "",
         "评比系数": "",
         "宽放率": "",
         "标准工时(s)": "",

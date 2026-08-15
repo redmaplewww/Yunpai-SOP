@@ -41,7 +41,7 @@ from cad_ai.sop_visual_template import (
 
 TEMPLATE_ID = "yunpai.sop.usb_c_cable_packaging.two_page.v1"
 FINAL_DOCX_NAME = "SOP完整模板_USB-C数据线包装_草案.docx"
-HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v2"
+HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
 HDMI_FINAL_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 CENTER_FLOWCHART_NAME = "center_flowchart.png"
 MANIFEST_NAME = "sop_template_manifest.json"
@@ -534,6 +534,7 @@ def _route_template_pages(
     version = str(route.get("version") or "DRAFT")
     document_no = f"SOP-{part_no}-V{version}"
     drawing_no = f"SOP-{part_no}-FMT"
+    ie_timing_values = _route_ie_timing_values(payload)
     operations = [str(item.get("title") or item.get("step_code") or "工序") for item in steps]
     flow_page = build_process_flow_page(
         product_name=product_name,
@@ -558,6 +559,7 @@ def _route_template_pages(
     }
     flow_page["ie_time_study"] = _default_process_ie_time_study(flow_page["flow_nodes"])
     for row in flow_page["ie_time_study"]["rows"]:
+        row.update(ie_timing_values)
         row["工时来源"] = "待IE实测/人工锁定"
 
     page_total = len(steps)
@@ -607,6 +609,7 @@ def _route_template_pages(
         for row in page["ie_time_study"]["rows"]:
             row["机器型号"] = "待工程确认"
             row["IE测量方法"] = "待IE现场实测"
+            row.update(ie_timing_values)
             row["工时来源"] = "待IE实测/人工锁定"
         quality_lines = _compact_lines(
             list(step.get("quality_check_json") or []) + list(step.get("acceptance_criteria_json") or []),
@@ -624,20 +627,44 @@ def _route_template_pages(
             list(step.get("safety_json") or []) + list(step.get("exception_json") or []),
             fallback="异常时停止流转、隔离并提交人工判定。",
         )
+        record_lines = _compact_lines(
+            list(step.get("record_output_json") or [])[-1:],
+            fallback="本工序记录要求待责任人确认。",
+        )
         input_lines = _compact_lines(
-            list(step.get("input_json") or []) + list(step.get("record_output_json") or []),
-            fallback="输入与记录要求待责任人确认。",
+            list(step.get("input_json") or []),
+            fallback="本工序输入资料待责任人确认。",
         )
         page["side_sections"] = [
             {"title": "作业标准", "lines": quality_lines},
             {"title": "设备/工具", "lines": equipment_lines},
             {"title": "辅助材料", "lines": material_lines},
             {"title": "注意事项", "lines": caution_lines},
-            {"title": "变更内容", "lines": [f"DRAFT / 路线v{version} / {normalized_date} / 待人工复核"]},
-            {"title": "物料表", "lines": input_lines},
+            {"title": "记录要求（最新）", "lines": record_lines},
+            {"title": "输入资料", "lines": input_lines},
         ]
         work_pages.append(page)
     return flow_page, work_pages
+
+
+def _route_ie_timing_values(payload: dict[str, Any]) -> dict[str, str]:
+    """Keep manual unit-price and staffing entries in every route-backed IE table."""
+    section = next(
+        (item for item in payload.get("sections") or [] if item.get("section_type") == "ie_timing"),
+        {},
+    )
+    content = section.get("content_json") or {}
+
+    def value(chinese_key: str, legacy_key: str) -> str:
+        raw = content.get(chinese_key)
+        if raw is None:
+            raw = content.get(legacy_key)
+        return "" if raw is None else str(raw).strip()
+
+    return {
+        "单价": value("单价", "unit_price"),
+        "人数": value("人数", "headcount"),
+    }
 
 
 def _route_step_node_type(step: dict[str, Any]) -> str:
@@ -707,12 +734,6 @@ def _apply_multi_page_delivery_controls(
             _set_exact_row_height(row, height)
         _set_word_cell(header.cell(1, 7), display_date)
         _set_word_cell(header.cell(2, 3), "DRAFT")
-        _set_word_cell(
-            body.cell(4, 4),
-            f"变更内容\nDRAFT / 路线草稿 / {normalized_date} / 待人工复核",
-            size=7,
-            align=0,
-        )
         for row_index, height in enumerate([900, 900, 500, 900, 900, 500]):
             _set_exact_row_height(body.rows[row_index], height)
         for row_index in range(len(ie_table.rows)):

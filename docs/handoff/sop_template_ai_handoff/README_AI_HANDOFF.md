@@ -11,7 +11,7 @@
 - 图片默认空白，等待人工上传和确认；
 - 文档始终为 `DRAFT`，批准、审核、制作值栏必须为空。
 
-当前模板 ID：`yunpai.sop.hdmi-cable.multi-page.v1`。
+当前模板 ID：`yunpai.sop.hdmi-cable.multi-page.v3`。
 
 ## 1. 工作根目录和唯一入口
 

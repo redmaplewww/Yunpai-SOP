@@ -48,8 +48,8 @@ def _ie_row(action: str, machine_model: str) -> dict[str, str]:
         {
             "机器型号": machine_model,
             "IE测量方法": "待IE实测",
-            "观测次数": "",
-            "平均观测工时(s)": "",
+            "单价": "",
+            "人数": "",
             "评比系数": "",
             "宽放率": "",
             "标准工时(s)": "",
@@ -219,7 +219,7 @@ def _validate(path: Path, expected_date: str) -> dict[str, Any]:
         "blank_signoff": signoff_values == ["", "", ""],
         "date": len(tables) >= 5 and tables[0].cell(2, 5).text.strip() == expected_date and tables[4].cell(1, 7).text.strip() == expected_date,
         "six_steps": all(token in all_text for token in ["备料核对", "外观检查", "导通/短路测试", "功能测试", "盘线扎线", "装袋贴标装箱"]),
-        "unmeasured_ie": "待IE实测" in all_text and "平均观测工时(s)" in all_text,
+        "unmeasured_ie": "待IE实测" in all_text and "单价" in all_text and "人数" in all_text,
         "unknowns_marked": all(token in all_text for token in ["TBD", "受控工单/BOM", "已批准程序"]),
     }
     errors = [name for name, passed in checks.items() if not passed]

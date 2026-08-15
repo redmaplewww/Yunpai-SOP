@@ -73,6 +73,10 @@ class SopVisualTemplateTests(unittest.TestCase):
         self.assertEqual(page["flow_nodes"][-1]["label"], "工序41")
         self.assertEqual(page["ie_time_study"]["title"], "IE工时记录")
         self.assertIn("机器型号", page["ie_time_study"]["fields"])
+        self.assertIn("单价", page["ie_time_study"]["fields"])
+        self.assertIn("人数", page["ie_time_study"]["fields"])
+        self.assertNotIn("观测次数", page["ie_time_study"]["fields"])
+        self.assertNotIn("平均观测工时(s)", page["ie_time_study"]["fields"])
         self.assertIn("动态调整", page["ie_time_study"]["fields"])
 
     def test_work_instruction_page_template_has_six_blank_image_slots_and_side_sections(self) -> None:
@@ -456,9 +460,11 @@ class SopVisualTemplateTests(unittest.TestCase):
                 self.assertEqual(len(flow_body.cell(0, 0).tables), 0)
                 self.assertIn("IE工时记录", _table_text(flow_ie_time))
                 self.assertIn("IE工时记录", _table_text(work_ie_time))
-                for expected_ie_field in ["动作", "机器型号", "IE测量方法", "平均观测工时(s)", "标准工时(s)", "动态调整"]:
+                for expected_ie_field in ["动作", "机器型号", "IE测量方法", "单价", "人数", "标准工时(s)", "动态调整"]:
                     self.assertIn(expected_ie_field, _table_text(flow_ie_time))
                     self.assertIn(expected_ie_field, _table_text(work_ie_time))
+                self.assertNotIn("观测次数", _table_text(flow_ie_time))
+                self.assertNotIn("平均观测工时(s)", _table_text(work_ie_time))
                 self.assertIn("demo_not_for_release", _table_text(flow_ie_time))
                 self.assertIn("demo_not_for_release", _table_text(work_ie_time))
                 self.assertNotIn("IE宸ユ椂", _table_text(flow_ie_time))

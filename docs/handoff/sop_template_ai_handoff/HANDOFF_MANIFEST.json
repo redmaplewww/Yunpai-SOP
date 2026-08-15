@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "package_id": "yunpai.sop_template.ai_handoff.v2",
-  "template_id": "yunpai.sop.hdmi-cable.multi-page.v1",
+  "template_id": "yunpai.sop.hdmi-cable.multi-page.v3",
   "workspace_root": ".",
   "primary_instruction": "docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md",
   "copyable_prompt": "docs/handoff/sop_template_ai_handoff/NEXT_SESSION_PROMPT.md",

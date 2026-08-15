@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -490,12 +491,14 @@ class SopKnowledgeStore:
             if not route:
                 raise KeyError(route_id)
             steps = [self._decode_step(row) for row in connection.execute(
-                "SELECT * FROM route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
+                "SELECT * FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
             )]
             provenance = [dict(row) for row in connection.execute(
                 """SELECT fp.*,es.source_type,es.source_path,es.page_or_sheet,es.excerpt
                    FROM field_provenance fp LEFT JOIN evidence_source es ON es.id=fp.evidence_id
-                   WHERE fp.route_id=? ORDER BY fp.id""", (route_id,)
+                   WHERE fp.route_id=?
+                     AND (fp.route_step_id IS NULL OR fp.route_step_id IN (SELECT id FROM active_route_step))
+                   ORDER BY fp.id""", (route_id,)
             )]
             reuse = [self._decode_json_columns(dict(row), ["match_basis_json", "field_map_json"]) for row in connection.execute(
                 "SELECT * FROM reuse_link WHERE target_route_id=?", (route_id,)
@@ -511,7 +514,7 @@ class SopKnowledgeStore:
                 """SELECT sm.id AS link_id,sm.route_step_id,sm.caption,sm.link_state,sm.confirmed_by,sm.confirmed_at,
                           ma.id AS asset_id,ma.original_name,ma.storage_path,ma.sha256,ma.mime_type,ma.source_note,ma.uploaded_by,ma.created_at
                    FROM step_media sm JOIN media_asset ma ON ma.id=sm.media_asset_id
-                   JOIN route_step rs ON rs.id=sm.route_step_id WHERE rs.route_id=? ORDER BY rs.sequence_no,sm.id""",
+                   JOIN active_route_step rs ON rs.id=sm.route_step_id WHERE rs.route_id=? ORDER BY rs.sequence_no,sm.id""",
                 (route_id,),
             )]
             assets = [dict(row) for row in connection.execute(
@@ -566,7 +569,7 @@ class SopKnowledgeStore:
         encoded = json.dumps(value, ensure_ascii=False) if field_name in JSON_FIELDS else value
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT s.*,r.status AS route_status,r.id AS route_id FROM route_step s JOIN product_route r ON r.id=s.route_id WHERE s.id=?",
+                "SELECT s.*,r.status AS route_status,r.id AS route_id FROM active_route_step s JOIN product_route r ON r.id=s.route_id WHERE s.id=?",
                 (step_id,),
             ).fetchone()
             if not row:
@@ -631,7 +634,7 @@ class SopKnowledgeStore:
                     continue
                 step_id = int(change["step_id"])
                 column = JSON_FIELDS.get(field_name, field_name)
-                row = connection.execute("SELECT * FROM route_step WHERE id=? AND route_id=?", (step_id, route_id)).fetchone()
+                row = connection.execute("SELECT * FROM active_route_step WHERE id=? AND route_id=?", (step_id, route_id)).fetchone()
                 if not row:
                     continue
                 value = change.get("value")
@@ -648,14 +651,14 @@ class SopKnowledgeStore:
                 changed.append({"step_id": step_id, "field_name": field_name})
 
             added: list[dict[str, Any]] = []
-            next_sequence = float(connection.execute("SELECT COALESCE(MAX(sequence_no),0) FROM route_step WHERE route_id=?", (route_id,)).fetchone()[0])
+            next_sequence = float(connection.execute("SELECT COALESCE(MAX(sequence_no),0) FROM active_route_step WHERE route_id=?", (route_id,)).fetchone()[0])
             existing_codes = {row[0] for row in connection.execute("SELECT step_code FROM route_step WHERE route_id=?", (route_id,))}
             for raw in parsed.get("new_steps", []):
                 insert_after = str(raw.get("after_step_ref", "")).strip()
                 desired_sequence: float | None = None
                 if insert_after:
                     after = connection.execute(
-                        """SELECT id,sequence_no FROM route_step WHERE route_id=?
+                        """SELECT id,sequence_no FROM active_route_step WHERE route_id=?
                            AND (CAST(id AS TEXT)=? OR lower(step_code)=lower(?) OR lower(title)=lower(?))
                            ORDER BY id LIMIT 1""",
                         (route_id, insert_after, insert_after, insert_after),
@@ -703,7 +706,7 @@ class SopKnowledgeStore:
 
             if added:
                 ordered = list(connection.execute(
-                    "SELECT id FROM route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
+                    "SELECT id FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
                 ))
                 for index, row in enumerate(ordered, start=1):
                     connection.execute(
@@ -766,7 +769,7 @@ class SopKnowledgeStore:
                 step_id = int(ref.get("step_id") or 0)
                 token = Path(str(ref.get("reference", ""))).stem.lower()
                 matches = [asset for asset in assets if token and token in Path(asset["original_name"]).stem.lower()]
-                if len(matches) != 1 or not connection.execute("SELECT 1 FROM route_step WHERE id=? AND route_id=?", (step_id, route_id)).fetchone():
+                if len(matches) != 1 or not connection.execute("SELECT 1 FROM active_route_step WHERE id=? AND route_id=?", (step_id, route_id)).fetchone():
                     unresolved_images.append({"step_id": step_id, "reference": ref.get("reference", ""), "reason": "图片未唯一匹配"})
                     continue
                 asset = matches[0]
@@ -832,7 +835,7 @@ class SopKnowledgeStore:
     def link_media_asset(self, step_id: int, asset_id: int, *, caption: str = "") -> int:
         with self.connect() as connection:
             pair = connection.execute(
-                """SELECT s.route_id,r.status FROM route_step s JOIN product_route r ON r.id=s.route_id
+                """SELECT s.route_id,r.status FROM active_route_step s JOIN product_route r ON r.id=s.route_id
                    JOIN media_asset ma ON ma.route_id=s.route_id WHERE s.id=? AND ma.id=?""",
                 (step_id, asset_id),
             ).fetchone()
@@ -846,6 +849,155 @@ class SopKnowledgeStore:
                 (step_id, asset_id, caption.strip(), utcnow()),
             )
             return int(connection.execute("SELECT id FROM step_media WHERE route_step_id=? AND media_asset_id=?", (step_id, asset_id)).fetchone()[0])
+
+    def replace_route_media_bindings(
+        self,
+        route_id: int,
+        bindings: list[dict[str, Any]],
+        *,
+        reviewer: str,
+    ) -> dict[str, Any]:
+        """Atomically persist the route-wide image layout without promoting draft links."""
+        if not reviewer.strip():
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            route = connection.execute("SELECT status FROM product_route WHERE id=?", (route_id,)).fetchone()
+            if not route:
+                raise KeyError(route_id)
+            if route["status"] == "approved":
+                raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
+
+            steps = {
+                int(row["id"]): dict(row)
+                for row in connection.execute(
+                    "SELECT id,sequence_no FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id",
+                    (route_id,),
+                )
+            }
+            assets = {
+                int(row["id"])
+                for row in connection.execute("SELECT id FROM media_asset WHERE route_id=?", (route_id,))
+            }
+            requested: dict[int, list[dict[str, Any]]] = {step_id: [] for step_id in steps}
+            seen_pairs: set[tuple[int, int]] = set()
+            for raw in bindings:
+                step_id = int(raw.get("step_id") or 0)
+                asset_id = int(raw.get("asset_id") or 0)
+                if step_id not in steps:
+                    raise ValueError("image binding references a step outside the route")
+                if asset_id not in assets:
+                    raise ValueError("image binding references an asset outside the route")
+                if (step_id, asset_id) in seen_pairs:
+                    raise ValueError("the same image cannot be bound to one step more than once")
+                if len(requested[step_id]) >= 6:
+                    raise ValueError("each step can contain at most 6 images")
+                seen_pairs.add((step_id, asset_id))
+                requested[step_id].append({
+                    "asset_id": asset_id,
+                    "caption": str(raw.get("caption") or "").strip(),
+                })
+
+            existing_rows = [dict(row) for row in connection.execute(
+                """SELECT sm.* FROM step_media sm
+                   JOIN active_route_step rs ON rs.id=sm.route_step_id
+                   WHERE rs.route_id=? ORDER BY rs.sequence_no,sm.id""",
+                (route_id,),
+            )]
+            existing_by_pair = {
+                (int(row["route_step_id"]), int(row["media_asset_id"])): row
+                for row in existing_rows
+            }
+            existing_layout = [
+                (int(row["route_step_id"]), int(row["media_asset_id"]), str(row["caption"]))
+                for row in existing_rows
+            ]
+            requested_layout = [
+                (step_id, item["asset_id"], item["caption"])
+                for step_id in steps
+                for item in requested[step_id]
+            ]
+            if existing_layout == requested_layout:
+                return {
+                    "status": "unchanged",
+                    "changed": False,
+                    "route_id": route_id,
+                    "affected_step_ids": [],
+                    "link_count": len(existing_layout),
+                }
+
+            previous_pairs = set(existing_by_pair)
+            requested_pairs = set(seen_pairs)
+            affected_step_ids = sorted({
+                step_id
+                for step_id in steps
+                if [item for item in existing_layout if item[0] == step_id]
+                != [item for item in requested_layout if item[0] == step_id]
+            })
+            now = utcnow()
+            connection.execute(
+                "DELETE FROM step_media WHERE route_step_id IN (SELECT id FROM active_route_step WHERE route_id=?)",
+                (route_id,),
+            )
+            for step_id in steps:
+                for item in requested[step_id]:
+                    prior = existing_by_pair.get((step_id, item["asset_id"]))
+                    connection.execute(
+                        """INSERT INTO step_media(route_step_id,media_asset_id,caption,link_state,confirmed_by,confirmed_at,created_at)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (
+                            step_id,
+                            item["asset_id"],
+                            item["caption"],
+                            prior["link_state"] if prior else "draft",
+                            prior["confirmed_by"] if prior else None,
+                            prior["confirmed_at"] if prior else None,
+                            prior["created_at"] if prior else now,
+                        ),
+                    )
+            if affected_step_ids:
+                connection.executemany(
+                    "UPDATE route_step SET review_state='needs_revision',updated_at=? WHERE id=?",
+                    [(now, step_id) for step_id in affected_step_ids],
+                )
+            return {
+                "status": "saved",
+                "changed": True,
+                "route_id": route_id,
+                "affected_step_ids": affected_step_ids,
+                "link_count": len(requested_layout),
+                "added_links": len(requested_pairs - previous_pairs),
+                "removed_links": len(previous_pairs - requested_pairs),
+            }
+
+    def confirm_media_link(self, link_id: int, *, reviewer: str) -> dict[str, Any]:
+        if not reviewer.strip():
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT sm.id,sm.link_state,sm.route_step_id,rs.route_id,r.status
+                   FROM step_media sm
+                   JOIN active_route_step rs ON rs.id=sm.route_step_id
+                   JOIN product_route r ON r.id=rs.route_id
+                   WHERE sm.id=?""",
+                (link_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(link_id)
+            if row["status"] == "approved":
+                raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
+            changed = row["link_state"] != "confirmed"
+            if changed:
+                connection.execute(
+                    "UPDATE step_media SET link_state='confirmed',confirmed_by=?,confirmed_at=? WHERE id=?",
+                    (reviewer.strip(), utcnow(), link_id),
+                )
+            return {
+                "status": "confirmed" if changed else "already_confirmed",
+                "changed": changed,
+                "route_id": int(row["route_id"]),
+                "step_id": int(row["route_step_id"]),
+                "link_id": link_id,
+            }
 
     def get_media_asset(self, asset_id: int) -> dict[str, Any]:
         with self.connect() as connection:
@@ -890,7 +1042,7 @@ class SopKnowledgeStore:
             row = connection.execute(
                 """SELECT s.*,r.id AS route_id,r.version AS route_version,r.status AS route_status,
                           p.product_code,f.code AS process_family_code
-                   FROM route_step s JOIN product_route r ON r.id=s.route_id JOIN product p ON p.id=r.product_id
+                   FROM active_route_step s JOIN product_route r ON r.id=s.route_id JOIN product p ON p.id=r.product_id
                    JOIN process_family f ON f.id=r.process_family_id WHERE s.id=?""",
                 (step_id,),
             ).fetchone()
@@ -951,7 +1103,9 @@ class SopKnowledgeStore:
             rows = connection.execute(
                 f"""SELECT id,route_step_id,route_id,route_version,product_code,process_family_code,step_code,title,
                            searchable_text,confirmed_by,confirmed_at,reuse_eligible,snapshot_json,{scope_column}
-                    FROM knowledge_fragment WHERE {' AND '.join(clauses)}
+                    FROM knowledge_fragment
+                    WHERE route_step_id IN (SELECT id FROM active_route_step)
+                      AND {' AND '.join(clauses)}
                     ORDER BY {scope_order} reuse_eligible DESC,confirmed_at DESC LIMIT ?""",
                 params,
             )
@@ -966,49 +1120,674 @@ class SopKnowledgeStore:
                 raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
             parent_id = None
             if step.parent_step_code:
-                parent = connection.execute("SELECT id FROM route_step WHERE route_id=? AND step_code=?", (route_id, step.parent_step_code)).fetchone()
+                parent = connection.execute("SELECT id FROM active_route_step WHERE route_id=? AND step_code=?", (route_id, step.parent_step_code)).fetchone()
                 if not parent:
                     raise ValueError("parent step not found")
                 parent_id = int(parent[0])
             return self._insert_step(connection, route_id, step, parent_id)
 
-    def delete_step(self, step_id: int) -> None:
+    def add_reviewable_step(
+        self,
+        route_id: int,
+        *,
+        title: str,
+        reviewer: str,
+        before_step_id: int | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        clean_title = title.strip()
+        clean_reviewer = reviewer.strip()
+        if not clean_title:
+            raise ValueError("step title is required")
+        if not clean_reviewer:
+            raise ValueError("worker identity is required")
         with self.connect() as connection:
-            row = connection.execute("SELECT route_id FROM route_step WHERE id=?", (step_id,)).fetchone()
+            self._require_mutable_route(connection, route_id)
+            ordered_ids = [
+                int(row[0]) for row in connection.execute(
+                    "SELECT id FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id",
+                    (route_id,),
+                )
+            ]
+            if before_step_id is not None and before_step_id not in ordered_ids:
+                raise ValueError("insert position is not an active step in this route")
+            draft = self._reviewable_step_draft(
+                connection,
+                route_id,
+                title=clean_title,
+                sequence_no=float(len(ordered_ids) + 1),
+                note=note,
+            )
+            step_id = self._insert_step(connection, route_id, draft, None)
+            insert_at = ordered_ids.index(before_step_id) if before_step_id is not None else len(ordered_ids)
+            ordered_ids.insert(insert_at, step_id)
+            self._write_step_order(connection, route_id, ordered_ids)
+            session_id = self._active_review_session(connection, route_id, clean_reviewer, "人工编辑工艺路线")
+            self._record_structure_decision(
+                connection,
+                session_id=session_id,
+                step_id=step_id,
+                field_name="route_insert",
+                old_value=None,
+                new_value={"title": clean_title, "position": insert_at + 1},
+                comment="新增工序已写入草稿，全部内容待人工核对",
+            )
+            connection.execute("UPDATE product_route SET updated_at=? WHERE id=?", (utcnow(), route_id))
+            return {
+                "status": "added",
+                "changed": True,
+                "route_id": route_id,
+                "step_id": step_id,
+                "step_title": clean_title,
+                "affected_step_ids": [step_id],
+                "page_number": insert_at + 2,
+            }
+
+    def split_step_actions(self, step_id: int, *, titles: list[str], reviewer: str) -> dict[str, Any]:
+        clean_titles = [item.strip() for item in titles if item.strip()]
+        clean_reviewer = reviewer.strip()
+        if len(clean_titles) < 2:
+            raise ValueError("split requires at least two concrete substeps")
+        if len(clean_titles) > 20:
+            raise ValueError("a single operation cannot create more than 20 substeps")
+        if not clean_reviewer:
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT step.*,route.status AS route_status
+                   FROM active_route_step AS step
+                   JOIN product_route AS route ON route.id=step.route_id
+                   WHERE step.id=?""",
+                (step_id,),
+            ).fetchone()
             if not row:
                 raise KeyError(step_id)
-            connection.execute("DELETE FROM route_step WHERE id=?", (step_id,))
+            self._require_mutable_route(connection, int(row["route_id"]), route=row)
+            old_methods = json.loads(row["method_json"])
+            now = utcnow()
+            connection.execute(
+                """UPDATE route_step
+                   SET method_json=?,review_state='needs_revision',reviewer_comment=?,updated_at=?
+                   WHERE id=?""",
+                (
+                    json.dumps(clean_titles, ensure_ascii=False),
+                    "作业动作已拆分，待人工逐项核对",
+                    now,
+                    step_id,
+                ),
+            )
+            self._remove_step_knowledge(connection, [step_id])
+            session_id = self._active_review_session(
+                connection, int(row["route_id"]), clean_reviewer, "人工拆分作业动作"
+            )
+            self._record_structure_decision(
+                connection,
+                session_id=session_id,
+                step_id=step_id,
+                field_name="method",
+                old_value=old_methods,
+                new_value=clean_titles,
+                comment="拆分为同一张指导书内的作业动作，路线页数不变",
+            )
+            connection.execute(
+                "UPDATE product_route SET updated_at=? WHERE id=?", (now, int(row["route_id"]))
+            )
+            page_number = self._active_step_page(connection, int(row["route_id"]), step_id)
+            return {
+                "status": "split_actions",
+                "changed": old_methods != clean_titles,
+                "route_id": int(row["route_id"]),
+                "step_id": step_id,
+                "step_title": row["title"],
+                "affected_step_ids": [step_id],
+                "page_number": page_number,
+                "substep_count": len(clean_titles),
+            }
 
-    def reorder_steps(self, route_id: int, ordered_step_ids: list[int]) -> None:
+    def split_step_independent(
+        self,
+        step_id: int,
+        *,
+        titles: list[str],
+        reviewer: str,
+    ) -> dict[str, Any]:
+        clean_titles = [item.strip() for item in titles if item.strip()]
+        clean_reviewer = reviewer.strip()
+        if len(clean_titles) < 2:
+            raise ValueError("split requires at least two independent step titles")
+        if len(clean_titles) > 12:
+            raise ValueError("a single operation cannot create more than 12 independent steps")
+        if not clean_reviewer:
+            raise ValueError("worker identity is required")
         with self.connect() as connection:
-            actual = {int(row[0]) for row in connection.execute("SELECT id FROM route_step WHERE route_id=?", (route_id,))}
-            if set(ordered_step_ids) != actual:
-                raise ValueError("reorder list must contain every route step exactly once")
-            for index, step_id in enumerate(ordered_step_ids, start=1):
-                connection.execute("UPDATE route_step SET sequence_no=?,updated_at=? WHERE id=?", (float(index), utcnow(), step_id))
+            row = connection.execute(
+                """SELECT step.*,route.status AS route_status
+                   FROM active_route_step AS step
+                   JOIN product_route AS route ON route.id=step.route_id
+                   WHERE step.id=?""",
+                (step_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(step_id)
+            route_id = int(row["route_id"])
+            self._require_mutable_route(connection, route_id, route=row)
+            ordered_ids = [
+                int(item[0]) for item in connection.execute(
+                    "SELECT id FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id",
+                    (route_id,),
+                )
+            ]
+            subtree_ids = {
+                int(item[0]) for item in connection.execute(
+                    """WITH RECURSIVE subtree(id) AS (
+                           SELECT id FROM active_route_step WHERE id=?
+                           UNION ALL
+                           SELECT child.id FROM active_route_step AS child
+                           JOIN subtree AS parent ON child.parent_step_id=parent.id
+                       ) SELECT id FROM subtree""",
+                    (step_id,),
+                )
+            }
+            insert_at = max(ordered_ids.index(item) for item in subtree_ids) + 1
+            old_title = str(row["title"])
+            now = utcnow()
+            connection.execute(
+                """UPDATE route_step
+                   SET title=?,review_state='needs_revision',reviewer_comment=?,updated_at=?
+                   WHERE id=?""",
+                (clean_titles[0], "工序已拆分，原有内容仅保留在第一道工序并待人工重新分配", now, step_id),
+            )
+            added_ids: list[int] = []
+            for title in clean_titles[1:]:
+                draft = self._reviewable_step_draft(
+                    connection,
+                    route_id,
+                    title=title,
+                    sequence_no=float(len(ordered_ids) + len(added_ids) + 1),
+                    note="",
+                )
+                added_ids.append(self._insert_step(connection, route_id, draft, None))
+            ordered_ids[insert_at:insert_at] = added_ids
+            self._write_step_order(connection, route_id, ordered_ids)
+            affected_ids = [step_id, *added_ids]
+            self._remove_step_knowledge(connection, affected_ids)
+            session_id = self._active_review_session(connection, route_id, clean_reviewer, "人工拆分独立工序")
+            self._record_structure_decision(
+                connection,
+                session_id=session_id,
+                step_id=step_id,
+                field_name="route_split",
+                old_value={"title": old_title, "step_id": step_id},
+                new_value={"titles": clean_titles, "step_ids": affected_ids},
+                comment="原工序拆分为多道独立工序；字段内容需要人工重新分配和核对",
+            )
+            connection.execute("UPDATE product_route SET updated_at=? WHERE id=?", (now, route_id))
+            page_numbers = [self._active_step_page(connection, route_id, item) for item in affected_ids]
+            return {
+                "status": "split_independent",
+                "changed": True,
+                "route_id": route_id,
+                "step_id": step_id,
+                "step_title": clean_titles[0],
+                "added_step_ids": added_ids,
+                "affected_step_ids": affected_ids,
+                "page_number": page_numbers[0],
+                "page_numbers": page_numbers,
+                "warnings": ["原工序的既有字段只保留在拆分后的第一道工序，其他工序内容需要人工补充。"],
+            }
 
-    def merge_steps(self, route_id: int, target_step_id: int, source_step_ids: list[int], *, reviewer: str) -> None:
+    def delete_step(self, step_id: int, *, deleted_by: str = "web_reviewer") -> dict[str, Any]:
+        if not deleted_by.strip():
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT step.route_id,step.step_code,step.title,route.status AS route_status
+                   FROM active_route_step AS step
+                   JOIN product_route AS route ON route.id=step.route_id
+                   WHERE step.id=?""",
+                (step_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(step_id)
+            if row["route_status"] == "approved":
+                raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
+            affected = list(connection.execute(
+                """WITH RECURSIVE affected(id) AS (
+                       SELECT id FROM active_route_step WHERE id=?
+                       UNION ALL
+                       SELECT child.id FROM active_route_step AS child
+                       JOIN affected AS parent ON child.parent_step_id=parent.id
+                   )
+                   SELECT step.id,step.sequence_no FROM active_route_step AS step
+                   JOIN affected ON affected.id=step.id ORDER BY step.sequence_no,step.id""",
+                (step_id,),
+            ))
+            now = datetime.now(timezone.utc)
+            deadline = now + timedelta(hours=24)
+            token = secrets.token_urlsafe(24)
+            cursor = connection.execute(
+                """INSERT INTO step_deletion(
+                       deletion_token,route_id,root_step_id,root_step_code,root_step_title,
+                       deleted_by,deleted_at,restore_deadline
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    token, row["route_id"], step_id, row["step_code"], row["title"],
+                    deleted_by.strip(), now.isoformat(), deadline.isoformat(),
+                ),
+            )
+            deletion_id = int(cursor.lastrowid)
+            connection.executemany(
+                """INSERT INTO step_deletion_item(deletion_id,route_step_id,original_sequence_no)
+                   VALUES(?,?,?)""",
+                [(deletion_id, int(item["id"]), float(item["sequence_no"])) for item in affected],
+            )
+            return {
+                "status": "deleted",
+                "route_id": int(row["route_id"]),
+                "step_id": step_id,
+                "step_code": row["step_code"],
+                "step_title": row["title"],
+                "affected_step_count": len(affected),
+                "deletion_token": token,
+                "restore_deadline": deadline.isoformat(),
+            }
+
+    def list_recent_step_deletions(self, route_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 50))
+        now = utcnow()
+        with self.connect() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT deletion.id,deletion.deletion_token,deletion.route_id,
+                          deletion.root_step_id AS step_id,deletion.root_step_code AS step_code,
+                          deletion.root_step_title AS step_title,deletion.deleted_by,
+                          deletion.deleted_at,deletion.restore_deadline,
+                          COUNT(item.route_step_id) AS affected_step_count
+                   FROM step_deletion AS deletion
+                   JOIN step_deletion_item AS item ON item.deletion_id=deletion.id
+                   WHERE deletion.route_id=? AND deletion.restored_at IS NULL
+                     AND deletion.restore_deadline>=?
+                   GROUP BY deletion.id
+                   ORDER BY deletion.deleted_at DESC,deletion.id DESC LIMIT ?""",
+                (route_id, now, safe_limit),
+            )]
+
+    def restore_step_deletion(self, deletion_token: str, *, reviewer: str) -> dict[str, Any]:
+        if not deletion_token.strip():
+            raise ValueError("deletion token is required")
+        if not reviewer.strip():
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            deletion = connection.execute(
+                """SELECT deletion.*,route.status AS route_status
+                   FROM step_deletion AS deletion
+                   JOIN product_route AS route ON route.id=deletion.route_id
+                   WHERE deletion.deletion_token=?""",
+                (deletion_token.strip(),),
+            ).fetchone()
+            if not deletion:
+                raise KeyError("step deletion not found")
+            affected_count = int(connection.execute(
+                "SELECT COUNT(*) FROM step_deletion_item WHERE deletion_id=?",
+                (deletion["id"],),
+            ).fetchone()[0])
+            if deletion["restored_at"]:
+                return {
+                    "status": "already_restored",
+                    "route_id": int(deletion["route_id"]),
+                    "step_id": int(deletion["root_step_id"]),
+                    "restored_step_count": affected_count,
+                }
+            if deletion["route_status"] == "approved":
+                raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
+            if datetime.fromisoformat(deletion["restore_deadline"]) < datetime.now(timezone.utc):
+                raise ValueError("undo period has expired")
+            restored_at = utcnow()
+            connection.execute(
+                "UPDATE step_deletion SET restored_at=?,restored_by=? WHERE id=?",
+                (restored_at, reviewer.strip(), deletion["id"]),
+            )
+            return {
+                "status": "restored",
+                "route_id": int(deletion["route_id"]),
+                "step_id": int(deletion["root_step_id"]),
+                "step_code": deletion["root_step_code"],
+                "step_title": deletion["root_step_title"],
+                "restored_step_count": affected_count,
+                "restored_at": restored_at,
+            }
+
+    def reorder_steps(
+        self,
+        route_id: int,
+        ordered_step_ids: list[int],
+        *,
+        reviewer: str = "web_reviewer",
+    ) -> dict[str, Any]:
+        if not reviewer.strip():
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            self._require_mutable_route(connection, route_id)
+            rows = list(connection.execute(
+                "SELECT id,parent_step_id FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id",
+                (route_id,),
+            ))
+            original_ids = [int(row["id"]) for row in rows]
+            actual = set(original_ids)
+            if len(ordered_step_ids) != len(actual) or set(ordered_step_ids) != actual:
+                raise ValueError("reorder list must contain every route step exactly once")
+            parent_by_id = {int(row["id"]): row["parent_step_id"] for row in rows}
+            active_parent: int | None = None
+            for item in ordered_step_ids:
+                parent_id = parent_by_id[item]
+                if parent_id is None:
+                    active_parent = item
+                elif int(parent_id) != active_parent:
+                    raise ValueError("child steps must stay directly below their parent during reorder")
+            changed_ids = [
+                step_id for index, step_id in enumerate(ordered_step_ids)
+                if original_ids[index] != step_id
+            ]
+            if not changed_ids:
+                return {
+                    "status": "unchanged",
+                    "changed": False,
+                    "route_id": route_id,
+                    "affected_step_ids": [],
+                    "page_number": 1,
+                }
+            now = utcnow()
+            self._write_step_order(connection, route_id, ordered_step_ids, updated_at=now)
+            connection.executemany(
+                """UPDATE route_step SET review_state='needs_revision',reviewer_comment=?,updated_at=?
+                   WHERE id=?""",
+                [("工序顺序已调整，待人工核对流程与上下游关系", now, item) for item in changed_ids],
+            )
+            self._remove_step_knowledge(connection, changed_ids)
+            session_id = self._active_review_session(connection, route_id, reviewer.strip(), "人工调整工序顺序")
+            self._record_structure_decision(
+                connection,
+                session_id=session_id,
+                step_id=changed_ids[0],
+                field_name="route_order",
+                old_value=original_ids,
+                new_value=ordered_step_ids,
+                comment="工序顺序已调整，流程图和指导书必须同步重排",
+            )
+            connection.execute("UPDATE product_route SET updated_at=? WHERE id=?", (now, route_id))
+            return {
+                "status": "reordered",
+                "changed": True,
+                "route_id": route_id,
+                "affected_step_ids": changed_ids,
+                "page_number": min(ordered_step_ids.index(item) for item in changed_ids) + 2,
+            }
+
+    def merge_steps(
+        self,
+        route_id: int,
+        target_step_id: int,
+        source_step_ids: list[int],
+        *,
+        reviewer: str,
+        title: str | None = None,
+    ) -> dict[str, Any]:
         if target_step_id in source_step_ids:
             source_step_ids = [item for item in source_step_ids if item != target_step_id]
-        if not source_step_ids:
-            raise ValueError("merge requires at least one source step")
+        if len(source_step_ids) != 1:
+            raise ValueError("merge requires exactly one adjacent source step")
+        if not reviewer.strip():
+            raise ValueError("worker identity is required")
         with self.connect() as connection:
-            target = connection.execute("SELECT * FROM route_step WHERE id=? AND route_id=?", (target_step_id, route_id)).fetchone()
-            sources = [connection.execute("SELECT * FROM route_step WHERE id=? AND route_id=?", (item, route_id)).fetchone() for item in source_step_ids]
-            if not target or any(item is None for item in sources):
+            self._require_mutable_route(connection, route_id)
+            target = connection.execute("SELECT * FROM active_route_step WHERE id=? AND route_id=?", (target_step_id, route_id)).fetchone()
+            source = connection.execute(
+                "SELECT * FROM active_route_step WHERE id=? AND route_id=?",
+                (source_step_ids[0], route_id),
+            ).fetchone()
+            if not target or not source:
                 raise KeyError("merge step not found")
-            methods = json.loads(target["method_json"])
-            actions = [target["action"]]
-            for source in sources:
-                actions.append(source["action"])
-                methods.extend(json.loads(source["method_json"]))
+            if target["parent_step_id"] != source["parent_step_id"]:
+                raise ValueError("only steps at the same hierarchy level can be merged")
+            child_count = int(connection.execute(
+                "SELECT COUNT(*) FROM active_route_step WHERE parent_step_id IN (?,?)",
+                (target_step_id, int(source["id"])),
+            ).fetchone()[0])
+            if child_count:
+                raise ValueError("steps with child processes must be resolved before merge")
+            sibling_rows = list(connection.execute(
+                """SELECT id FROM active_route_step WHERE route_id=?
+                   AND ((parent_step_id IS NULL AND ? IS NULL) OR parent_step_id=?)
+                   ORDER BY sequence_no,id""",
+                (route_id, target["parent_step_id"], target["parent_step_id"]),
+            ))
+            sibling_ids = [int(item[0]) for item in sibling_rows]
+            if abs(sibling_ids.index(target_step_id) - sibling_ids.index(int(source["id"]))) != 1:
+                raise ValueError("only adjacent steps can be merged")
+            old_payload = {
+                "target": self._decode_step(target),
+                "source": self._decode_step(source),
+            }
+            merged_title = (title or str(target["title"])).strip()
+            if not merged_title:
+                raise ValueError("merged step title is required")
+            scalar_values = {
+                "title": merged_title,
+                "action": self._merge_text_values(str(target["action"]), str(source["action"])),
+                "why": self._merge_text_values(str(target["why"]), str(source["why"])),
+            }
+            json_values = {
+                column: self._merge_json_lists(json.loads(target[column]), json.loads(source[column]))
+                for column in JSON_FIELDS.values()
+            }
+            now = utcnow()
             connection.execute(
-                "UPDATE route_step SET action=?,method_json=?,review_state='needs_revision',reviewer_comment=?,updated_at=? WHERE id=?",
-                ("；".join(actions), json.dumps(methods, ensure_ascii=False), f"merged by {reviewer}; acceptance and provenance require re-review", utcnow(), target_step_id),
+                """UPDATE route_step SET title=?,action=?,why=?,input_json=?,material_json=?,tool_equipment_json=?,
+                       fixture_json=?,parameter_json=?,method_json=?,quality_check_json=?,acceptance_criteria_json=?,
+                       safety_json=?,record_output_json=?,exception_json=?,unknowns_json=?,review_state='needs_revision',
+                       reviewer_comment=?,updated_at=? WHERE id=?""",
+                (
+                    scalar_values["title"], scalar_values["action"], scalar_values["why"],
+                    *(json.dumps(json_values[column], ensure_ascii=False) for column in JSON_FIELDS.values()),
+                    "相邻工序已合并，字段冲突和上下游关系待人工核对", now, target_step_id,
+                ),
             )
-            for source_id in source_step_ids:
-                connection.execute("UPDATE route_step SET parent_step_id=NULL WHERE parent_step_id=?", (source_id,))
-                connection.execute("DELETE FROM route_step WHERE id=?", (source_id,))
+            for media in connection.execute("SELECT * FROM step_media WHERE route_step_id=?", (int(source["id"]),)):
+                connection.execute(
+                    """INSERT OR IGNORE INTO step_media(
+                           route_step_id,media_asset_id,caption,link_state,confirmed_by,confirmed_at,created_at
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        target_step_id, media["media_asset_id"], media["caption"], media["link_state"],
+                        media["confirmed_by"], media["confirmed_at"], media["created_at"],
+                    ),
+                )
+            for provenance in connection.execute("SELECT * FROM field_provenance WHERE route_step_id=?", (int(source["id"]),)):
+                connection.execute(
+                    """INSERT INTO field_provenance(
+                           route_step_id,route_id,field_name,evidence_id,source_route_id,source_route_version,
+                           source_step_code,source_field_name,confidence,conflict_status,note
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        target_step_id, route_id, provenance["field_name"], provenance["evidence_id"],
+                        provenance["source_route_id"], provenance["source_route_version"],
+                        provenance["source_step_code"] or source["step_code"], provenance["source_field_name"],
+                        provenance["confidence"], provenance["conflict_status"],
+                        f"合并自 {source['step_code']}；{provenance['note']}",
+                    ),
+                )
+            self._remove_step_knowledge(connection, [target_step_id, int(source["id"])])
+            connection.execute("DELETE FROM route_step WHERE id=?", (int(source["id"]),))
+            ordered_ids = [
+                int(item[0]) for item in connection.execute(
+                    "SELECT id FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id",
+                    (route_id,),
+                )
+            ]
+            self._write_step_order(connection, route_id, ordered_ids, updated_at=now)
+            session_id = self._active_review_session(connection, route_id, reviewer.strip(), "人工合并相邻工序")
+            merged_row = connection.execute("SELECT * FROM active_route_step WHERE id=?", (target_step_id,)).fetchone()
+            self._record_structure_decision(
+                connection,
+                session_id=session_id,
+                step_id=target_step_id,
+                field_name="route_merge",
+                old_value=old_payload,
+                new_value=self._decode_step(merged_row),
+                comment=f"{source['step_code']} 已合并到 {target['step_code']}，全部字段待人工核对",
+            )
+            connection.execute("UPDATE product_route SET updated_at=? WHERE id=?", (now, route_id))
+            return {
+                "status": "merged",
+                "changed": True,
+                "route_id": route_id,
+                "step_id": target_step_id,
+                "step_title": merged_title,
+                "removed_step_id": int(source["id"]),
+                "removed_step_title": source["title"],
+                "affected_step_ids": [target_step_id],
+                "page_number": self._active_step_page(connection, route_id, target_step_id),
+                "warnings": ["合并结果包含两道工序的全部字段，冲突内容必须人工逐项核对。"],
+            }
+
+    @staticmethod
+    def _require_mutable_route(
+        connection: sqlite3.Connection,
+        route_id: int,
+        *,
+        route: sqlite3.Row | None = None,
+    ) -> None:
+        status = route["route_status"] if route is not None and "route_status" in route.keys() else None
+        if status is None:
+            row = connection.execute("SELECT status FROM product_route WHERE id=?", (route_id,)).fetchone()
+            if not row:
+                raise KeyError(route_id)
+            status = row["status"]
+        if status == "approved":
+            raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
+
+    def _reviewable_step_draft(
+        self,
+        connection: sqlite3.Connection,
+        route_id: int,
+        *,
+        title: str,
+        sequence_no: float,
+        note: str,
+    ) -> RouteStepDraft:
+        clean_note = note.strip()
+        return RouteStepDraft(
+            step_code=self._next_web_step_code(connection, route_id),
+            sequence_no=sequence_no,
+            title=title,
+            action=clean_note or f"执行“{title}”工序；具体动作尚未由人工提供。",
+            why=f"“{title}”的工序目的需要工艺工程师依据受控文件核对。",
+            method=[clean_note] if clean_note else ["本工序的可执行作业步骤尚未由人工提供。"],
+            quality_check=["本工序检查方法尚未由人工提供。"],
+            acceptance_criteria=["本工序合格判据尚未由责任人依据受控规范提供。"],
+            record_output=["本工序记录要求尚未由人工提供。"],
+            exception=["信息不完整或结果异常时停止流转并提交人工判定。"],
+            unknowns=[{
+                "field_name": "route_structure_review",
+                "reason": "人工新增工序尚未完成受控资料、现场动作和质量要求核对。",
+                "owner_role": "工艺工程师",
+                "required_evidence": "受控工艺文件、现场核对记录和责任人确认",
+                "blocking": True,
+            }],
+            review_state="needs_revision",
+            reviewer_comment="人工新增路线草稿，待逐项核对",
+        )
+
+    @staticmethod
+    def _next_web_step_code(connection: sqlite3.Connection, route_id: int) -> str:
+        existing = {
+            str(row[0]) for row in connection.execute(
+                "SELECT step_code FROM route_step WHERE route_id=?", (route_id,)
+            )
+        }
+        index = 1
+        while f"WEB-{index:03d}" in existing:
+            index += 1
+        return f"WEB-{index:03d}"
+
+    @staticmethod
+    def _write_step_order(
+        connection: sqlite3.Connection,
+        route_id: int,
+        ordered_step_ids: list[int],
+        *,
+        updated_at: str | None = None,
+    ) -> None:
+        moment = updated_at or utcnow()
+        connection.executemany(
+            "UPDATE route_step SET sequence_no=?,updated_at=? WHERE id=? AND route_id=?",
+            [(float(index), moment, step_id, route_id) for index, step_id in enumerate(ordered_step_ids, start=1)],
+        )
+
+    @staticmethod
+    def _active_step_page(connection: sqlite3.Connection, route_id: int, step_id: int) -> int:
+        ids = [
+            int(row[0]) for row in connection.execute(
+                "SELECT id FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
+            )
+        ]
+        if step_id not in ids:
+            raise KeyError(step_id)
+        return ids.index(step_id) + 2
+
+    @staticmethod
+    def _merge_text_values(first: str, second: str) -> str:
+        values = [item.strip() for item in (first, second) if item.strip()]
+        return "；".join(dict.fromkeys(values))
+
+    @staticmethod
+    def _merge_json_lists(first: list[Any], second: list[Any]) -> list[Any]:
+        merged: list[Any] = []
+        seen: set[str] = set()
+        for item in [*first, *second]:
+            marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            merged.append(item)
+        return merged
+
+    @staticmethod
+    def _remove_step_knowledge(connection: sqlite3.Connection, step_ids: list[int]) -> None:
+        for step_id in step_ids:
+            row = connection.execute(
+                "SELECT id FROM knowledge_fragment WHERE route_step_id=?", (step_id,)
+            ).fetchone()
+            if not row:
+                continue
+            connection.execute("DELETE FROM knowledge_fragment_fts WHERE fragment_id=?", (str(row["id"]),))
+            connection.execute("DELETE FROM knowledge_fragment WHERE id=?", (row["id"],))
+
+    @staticmethod
+    def _record_structure_decision(
+        connection: sqlite3.Connection,
+        *,
+        session_id: int,
+        step_id: int,
+        field_name: str,
+        old_value: Any,
+        new_value: Any,
+        comment: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO review_decision(
+                   review_session_id,entity_type,entity_id,field_name,decision,
+                   old_value_json,new_value_json,comment,decided_at
+               ) VALUES(?,'field',?,?, 'needs_revision',?,?,?,?)""",
+            (
+                session_id,
+                step_id,
+                field_name,
+                json.dumps(old_value, ensure_ascii=False),
+                json.dumps(new_value, ensure_ascii=False),
+                comment,
+                utcnow(),
+            ),
+        )
 
     def create_review_session(self, route_id: int, reviewer: str, comment: str = "") -> int:
         if not reviewer.strip():
@@ -1240,7 +2019,7 @@ class SopKnowledgeStore:
             })
 
         steps = [self._decode_step(row) for row in connection.execute(
-            "SELECT * FROM route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
+            "SELECT * FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,)
         )]
         unconfirmed_steps = [step["step_code"] for step in steps if step["review_state"] != "confirmed"]
         if unconfirmed_steps:
@@ -1351,7 +2130,7 @@ class SopKnowledgeStore:
                FROM product_route r JOIN product p ON p.id=r.product_id JOIN process_family f ON f.id=r.process_family_id WHERE r.id=?""",
             (route_id,),
         ).fetchone())
-        steps = [self._decode_step(row) for row in connection.execute("SELECT * FROM route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,))]
+        steps = [self._decode_step(row) for row in connection.execute("SELECT * FROM active_route_step WHERE route_id=? ORDER BY sequence_no,id", (route_id,))]
         sections = [self._decode_section(row) for row in connection.execute(
             """SELECT s.* FROM route_section s
                JOIN (SELECT section_type,MAX(version) AS version FROM route_section WHERE route_id=? GROUP BY section_type) latest
@@ -1372,6 +2151,12 @@ class SopKnowledgeStore:
         item = dict(row)
         for column in ("content_json", "source_json", "conflicts_json", "unknowns_json"):
             item[column] = json.loads(item[column])
+        if item["section_type"] == "ie_timing":
+            # Surface new editable fields for pre-existing routes without rewriting their history.
+            content = dict(item["content_json"])
+            content.setdefault("单价", "")
+            content.setdefault("人数", "")
+            item["content_json"] = content
         return item
 
     @staticmethod
@@ -1394,14 +2179,14 @@ class SopKnowledgeStore:
 
     def _field_sources(self, connection: sqlite3.Connection, route_id: int) -> dict[str, dict[str, Any]]:
         sources: dict[str, dict[str, Any]] = {}
-        for row in connection.execute("SELECT step_code FROM route_step WHERE route_id=?", (route_id,)):
+        for row in connection.execute("SELECT step_code FROM active_route_step WHERE route_id=?", (route_id,)):
             for field_name in ("action","why",*JSON_FIELDS):
                 sources[f"{row['step_code']}.{field_name}"] = {"source_route_id": route_id, "source_step_code": row["step_code"], "source_field": field_name}
         return sources
 
     def _build_field_map(self, connection: sqlite3.Connection, source_route_id: int, target_route_id: int) -> dict[str, Any]:
-        source = {row["step_code"]: dict(row) for row in connection.execute("SELECT * FROM route_step WHERE route_id=?", (source_route_id,))}
-        target = {row["step_code"]: dict(row) for row in connection.execute("SELECT * FROM route_step WHERE route_id=?", (target_route_id,))}
+        source = {row["step_code"]: dict(row) for row in connection.execute("SELECT * FROM active_route_step WHERE route_id=?", (source_route_id,))}
+        target = {row["step_code"]: dict(row) for row in connection.execute("SELECT * FROM active_route_step WHERE route_id=?", (target_route_id,))}
         result: dict[str, Any] = {}
         for code in set(source) & set(target):
             for field in ("action","why",*JSON_FIELDS.values()):
@@ -1410,8 +2195,8 @@ class SopKnowledgeStore:
 
     def _write_reuse_provenance(self, connection: sqlite3.Connection, target_route_id: int, source_route_id: int, similarity: float) -> None:
         version = int(connection.execute("SELECT version FROM product_route WHERE id=?", (source_route_id,)).fetchone()[0])
-        source_steps = {row["step_code"]: row for row in connection.execute("SELECT * FROM route_step WHERE route_id=?", (source_route_id,))}
-        for target in connection.execute("SELECT * FROM route_step WHERE route_id=?", (target_route_id,)):
+        source_steps = {row["step_code"]: row for row in connection.execute("SELECT * FROM active_route_step WHERE route_id=?", (source_route_id,))}
+        for target in connection.execute("SELECT * FROM active_route_step WHERE route_id=?", (target_route_id,)):
             if target["step_code"] not in source_steps:
                 continue
             for field_name in ("action","why",*JSON_FIELDS):

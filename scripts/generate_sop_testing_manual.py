@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from docx import Document
-from docx.enum.section import WD_ORIENT
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -13,227 +12,215 @@ from docx.shared import Cm, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "outputs" / "manuals" / "Yunpai_SOP_人工测试辅助说明手册.docx"
+OUT = ROOT / "outputs" / "manuals" / "Yunpai_SOP_辅助测试说明书_对话与DOCX预览版.docx"
 
 
-def set_cell_shading(cell, fill: str) -> None:
-    properties = cell._tc.get_or_add_tcPr()
-    shading = OxmlElement("w:shd")
-    shading.set(qn("w:fill"), fill)
-    properties.append(shading)
+def shade(cell, color: str) -> None:
+    props = cell._tc.get_or_add_tcPr()
+    node = OxmlElement("w:shd")
+    node.set(qn("w:fill"), color)
+    props.append(node)
 
 
-def set_repeat_table_header(row) -> None:
-    properties = row._tr.get_or_add_trPr()
-    marker = OxmlElement("w:tblHeader")
-    marker.set(qn("w:val"), "true")
-    properties.append(marker)
+def repeat_header(row) -> None:
+    props = row._tr.get_or_add_trPr()
+    node = OxmlElement("w:tblHeader")
+    node.set(qn("w:val"), "true")
+    props.append(node)
 
 
-def add_table(document: Document, headers: list[str], rows: list[list[str]], widths: list[float] | None = None):
-    table = document.add_table(rows=1, cols=len(headers))
-    table.style = "Table Grid"
-    table.autofit = False
-    header = table.rows[0]
-    set_repeat_table_header(header)
-    for index, value in enumerate(headers):
-        cell = header.cells[index]
+def table(doc: Document, headers: list[str], rows: list[list[str]], widths: list[float]) -> None:
+    t = doc.add_table(rows=1, cols=len(headers))
+    t.style = "Table Grid"
+    t.autofit = False
+    header = t.rows[0]
+    repeat_header(header)
+    for i, value in enumerate(headers):
+        cell = header.cells[i]
         cell.text = value
-        set_cell_shading(cell, "1F4E78")
+        cell.width = Cm(widths[i])
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        shade(cell, "1F4E78")
         for run in cell.paragraphs[0].runs:
+            run.font.name = "Microsoft YaHei"
             run.font.color.rgb = RGBColor(255, 255, 255)
             run.font.bold = True
-            run.font.size = Pt(9)
-        if widths:
-            cell.width = Cm(widths[index])
-    for values in rows:
-        cells = table.add_row().cells
-        for index, value in enumerate(values):
-            cells[index].text = value
-            cells[index].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            if widths:
-                cells[index].width = Cm(widths[index])
-            for paragraph in cells[index].paragraphs:
+            run.font.size = Pt(8.5)
+    for row in rows:
+        cells = t.add_row().cells
+        for i, value in enumerate(row):
+            cells[i].text = value
+            cells[i].width = Cm(widths[i])
+            cells[i].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            for paragraph in cells[i].paragraphs:
                 for run in paragraph.runs:
-                    run.font.size = Pt(8.5)
-    document.add_paragraph()
-    return table
+                    run.font.name = "Microsoft YaHei"
+                    run.font.size = Pt(8)
+    doc.add_paragraph()
 
 
-def add_bullets(document: Document, items: list[str]) -> None:
+def bullets(doc: Document, items: list[str]) -> None:
     for item in items:
-        document.add_paragraph(item, style="List Bullet")
+        doc.add_paragraph(item, style="List Bullet")
 
 
-def add_numbered(document: Document, items: list[str]) -> None:
-    for item in items:
-        document.add_paragraph(item, style="List Number")
-
-
-def add_heading(document: Document, text: str, level: int = 1) -> None:
-    document.add_heading(text, level=level)
-
-
-def add_note(document: Document, text: str) -> None:
-    paragraph = document.add_paragraph()
-    paragraph.style = "Intense Quote"
-    paragraph.add_run(text).bold = True
-
-
-def configure_document(document: Document) -> None:
-    section = document.sections[0]
-    section.top_margin = Cm(1.7)
-    section.bottom_margin = Cm(1.7)
-    section.left_margin = Cm(1.8)
-    section.right_margin = Cm(1.8)
-    styles = document.styles
-    styles["Normal"].font.name = "Microsoft YaHei"
-    styles["Normal"]._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
-    styles["Normal"].font.size = Pt(10)
-    for name, size, color in (("Title", 24, "17365D"), ("Heading 1", 16, "17365D"), ("Heading 2", 12, "1F4E78")):
-        style = styles[name]
+def setup(doc: Document) -> None:
+    section = doc.sections[0]
+    section.top_margin = Cm(1.6)
+    section.bottom_margin = Cm(1.6)
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    for name, size, color in (("Normal", 10, "000000"), ("Title", 23, "17365D"), ("Heading 1", 16, "17365D"), ("Heading 2", 12, "1F4E78")):
+        style = doc.styles[name]
         style.font.name = "Microsoft YaHei"
         style._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
         style.font.size = Pt(size)
         style.font.color.rgb = RGBColor.from_string(color)
-    if "Small Text" not in [style.name for style in styles]:
-        small = styles.add_style("Small Text", WD_STYLE_TYPE.PARAGRAPH)
-        small.font.name = "Microsoft YaHei"
-        small._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
-        small.font.size = Pt(8.5)
+    if "Test Note" not in [style.name for style in doc.styles]:
+        style = doc.styles.add_style("Test Note", WD_STYLE_TYPE.PARAGRAPH)
+        style.font.name = "Microsoft YaHei"
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+        style.font.size = Pt(9)
+        style.font.color.rgb = RGBColor.from_string("7F6000")
+
+
+def note(doc: Document, text: str) -> None:
+    p = doc.add_paragraph(style="Test Note")
+    p.add_run("注意：").bold = True
+    p.add_run(text)
+
+
+def case_rows(cases: list[tuple[str, str, str, str, str]]) -> list[list[str]]:
+    return [[case_id, action, expected, evidence, priority] for case_id, action, expected, evidence, priority in cases]
 
 
 def main() -> None:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
-    configure_document(doc)
-
+    setup(doc)
     title = doc.add_paragraph(style="Title")
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.add_run("Yunpai SOP 工作台\n人工测试辅助说明手册")
-    subtitle = doc.add_paragraph(style="Subtitle")
+    title.add_run("Yunpai SOP 辅助测试说明书")
+    subtitle = doc.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    subtitle.add_run("参照模板：HDMI成品线检验与包装_SOP图_草案.docx\n版本：测试准备稿 | 日期：2026-08-12")
+    subtitle.add_run("对话式 SOP 修改 + DOCX 预览版 | 测试基线 | 2026-08-13")
     doc.add_paragraph()
-    add_note(doc, "适用边界：本手册用于人工测试本地 SOP 工作台，不构成生产放行依据。模板和当前演示路线均标记为 DRAFT / demo_not_for_release；所有规格、阈值、工时和签核仍须来自受控资料与人工确认。")
+    note(doc, "本说明书用于人工验收本地服务 http://127.0.0.1:8787/。当前目标产品仅保留“自然语言对话修改”和“DOCX 预览/下载”两类能力；所有测试应使用测试路线和虚构数据，不得将 AI 产出视为生产批准。")
 
-    add_heading(doc, "1. 使用目标")
-    doc.add_paragraph("本手册把 HDMI 成品线“成品检验与包装”标准模板中的字段、工序和质量边界映射到 Yunpai SOP 工作台，帮助测试人员：")
-    add_bullets(doc, [
-        "确认网页是否能正确展示、编辑、保存、确认和生成 SOP 内容；",
-        "验证自然语言修改、图片素材、历史知识搜索、路线资料与 DOCX 预览之间的一致性；",
-        "用有意的错误输入检查系统是否保留草稿、阻止错误确认，并清楚提示原因；",
-        "记录可复现的页面、接口、数据一致性和权限/门禁问题。",
+    doc.add_heading("1. 测试目标与判定", level=1)
+    bullets(doc, [
+        "确认首页可以选择产品路线、显示路线版本/状态/工序数量，并且只展示自然语言对话修改与 DOCX 预览。",
+        "确认 AI 修改有明确定位、变更说明、人工核对标记和安全边界；问答、未知信息和不可理解输入不能误写入。",
+        "确认有效修改会生成与页面预览一致的新 DOCX；流程、工序页、图片和草稿状态均符合版式与审批规则。",
+        "确认工艺路线、图片、知识复用和版本审批的变更不会绕过人工确认或混用其他产品资料。",
     ])
+    table(doc, ["等级", "判定与处理"], [
+        ["P0 阻断", "误批准/误发布、写错产品或工序、数据丢失、DOCX 与页面不一致、已批准版本被直接覆盖。立即停止该路线继续写入。"],
+        ["P1 严重", "核心修改、生成、确认、版本或知识隔离失败，导致测试结论不可信。"],
+        ["P2 一般", "功能可替代但流程、提示、异常处理或展示不符合要求。"],
+        ["P3 体验", "排版、文案、轻微交互或视觉问题，不影响数据和审批安全。"],
+    ], [3.2, 15.6])
 
-    add_heading(doc, "2. 模板基线")
-    doc.add_paragraph("本次参照的 HDMI 模板定义了“成品检验与包装”工站，作业顺序为：备料 -> 外观 -> 导通/短路测试 -> 功能测试 -> 盘线扎线 -> 装袋贴标装箱。其关键受控信息如下。")
-    add_table(doc, ["模板区域", "应有内容", "工作台测试关注点"], [
-        ["文件头", "品名、料号、版本、日期、文件编号、页码、核准/审核/拟订", "产品身份与路线资料是否可显示、编辑后是否留痕；草稿不能被误展示为正式发布。"],
-        ["六道工序", "备料、外观、电测、功能、盘线、包装", "流程顺序、节点数量、标题、状态、字段编辑与确认是否一致。"],
-        ["作业标准", "BOM/工单一致性、限度样板、批准测试程序、不合格隔离", "质量与异常标签页能否完整记录；不能把“待确认/TBD”当作合格标准。"],
-        ["设备与物料", "测试仪、信号源/显示端或治具、扫码/盘线工具、保护帽/扎带/PE袋/标签/纸箱", "工具、治具、材料字段能否逐项输入、保存和再载入。"],
-        ["IE工时", "测量方法、观测次数、平均/标准工时、来源、动态调整", "路线资料的 IE 章节能否识别为空或待确认，且不从模板臆填工时。"],
-        ["签核与发布", "批准、审核、制作、环保/管制文件", "单工序确认、路线审核、正式批准的边界是否清晰，未完成项目是否被拦截。"],
-    ], [3.1, 7.0, 7.2])
+    doc.add_heading("2. 测试前准备", level=1)
+    table(doc, ["项目", "要求"], [
+        ["访问地址", "http://127.0.0.1:8787/；记录测试开始时间、浏览器版本、路线名称/ID、初始版本指纹和工序数量。"],
+        ["测试数据", "准备两个不同产品型号的测试路线；两张小于 5MB 的 PNG/JPEG；测试人员姓名；可丢弃的描述文本。不得输入真实客户、人员或受控参数。"],
+        ["AI 状态", "先记录页面显示“AI模型已连接”或“离线兜底模式”。分别完成在线与离线场景；切换服务配置前先导出或记录当前版本。"],
+        ["证据", "每条失败用例至少保留：页面截图、输入原文、实际结果、路线与工序标识、DOCX 文件名/版本指纹；必要时保留浏览器控制台和网络请求。"],
+        ["恢复", "涉及新增、删除、合并、批准的用例均在专用测试路线执行；结束后不要把测试路线作为正式模板复用。"],
+    ], [3.2, 15.6])
 
-    add_heading(doc, "3. 页面与模块说明")
-    doc.add_paragraph("本地服务地址： http://127.0.0.1:8787/ 。首页是“DOCX 校样台”；/workbench 是“作业修正台”。两者共用同一条 SOP 路线与知识库，但面向不同的人工工作方式。")
-    add_table(doc, ["模块", "位置", "细节功能", "人工测试要点"], [
-        ["产品/路线选择", "首页与作业修正台顶部", "读取产品清单并加载最新路线；显示产品编码、版本、路线状态和节点数。", "切换后工序、文档、图片和搜索结果必须全部切换到同一条路线；空路线应有明确空状态。"],
-        ["DOCX 校样与下载", "首页左侧", "获取最新 DOCX，展示由同一 DOCX 生成的 PDF/页面预览，并提供 DOCX 下载。", "预览版本、页数和下载内容需对应同一次更新；生成失败时不能展示陈旧文件为最新。"],
-        ["对话式修改", "首页右侧", "输入自然语言要求，系统定位工序/章节、写入草稿、重新生成 DOCX，并显示对话历史。", "含糊指令、多个工序、错误工序编号、空输入、AI不可用时的离线解析均需有可理解结果。"],
-        ["自然语言预览", "/workbench 顶部", "先把文字要求解析成变更提案（字段改动、新增工序、图片引用），供人工查看后应用。", "预览不应直接确认或发布；同一句话涉及多项变更时，目标工序和字段必须正确。"],
-        ["工艺流程", "/workbench 中部", "按路线顺序展示所有节点，标明工序代码、名称、子步骤和审核状态。", "测试 6 步模板路线和 17 步演示路线；顺序、数量和子步骤关系均不可丢失或截断。"],
-        ["作业指导", "/workbench 下部的“作业指导”", "编辑标题、动作、目的、方法、材料、设备、治具和安全要求；保存草稿。", "多行数组字段要按“一行一项”保留；保存后刷新和切换工序不应丢失。"],
-        ["质量与异常", "/workbench 下部的“质量与异常”", "编辑质量检查、合格标准、记录输出、异常处理和审核意见。", "输入不合格隔离、待工程确认、TBD 等内容后，系统不可把工序标成已确认或已批准。"],
-        ["路线资料", "/workbench 下部的“路线资料”", "查看/修订产品身份、BOM、设备治具、参数、质量、包装标签、IE工时、签核等章节。", "章节保存应生成新版本并保留历史；空的受控资料要呈现 unknown/blocking 信息。"],
-        ["图片素材", "/workbench 右侧", "上传 PNG/JPEG 图片，展示素材并绑定到当前工序；可通过名称匹配供提案引用。", "文件格式、空文件、超大文件、重复名、跨工序绑定、刷新后图片可访问等均应测试。"],
-        ["相似历史内容", "/workbench 右侧", "按工序标题或关键字搜索已确认的历史知识。", "草稿、被拒绝和非适用产品不应被混入；搜索空词、特殊符号、超长词需稳定。"],
-        ["单工序确认", "/workbench 底部操作区", "操作人确认已逐项核对后，当前工序进入可搜索知识；不等同于整份 SOP 发布。", "未填写操作人、取消确认、含 blocking unknown 或未核对字段时的行为应与门禁规则一致。"],
-        ["审核/发布门禁", "后端审核接口与完整工作台流程", "路线可经历草稿、提交审核、演示批准或正式批准；正式批准需要全部工序/章节确认与产品确认令牌。", "验证缺任何确认、使用错误令牌、空批准人、仍有 unknown 时必须拒绝，且不得产生部分副作用。"],
-    ], [2.6, 3.0, 6.3, 5.4])
+    doc.add_heading("3. 页面与基础展示", level=1)
+    base_cases = [
+        ("UI-01", "访问 /。确认首页只显示：路线选择、路线摘要、自然语言对话区、DOCX 预览/下载区。", "页面正常加载；不出现旧填表工作台、工序编辑表单或其他旧模块。", "首页全屏截图", "P0"),
+        ("UI-02", "直接访问 /workbench、刷新并用新窗口访问。", "旧工作台不存在，应返回 404/明确迁移页，而不是旧功能界面。", "地址栏和响应截图", "P0"),
+        ("UI-03", "选择产品路线 A，再选择路线 B，然后切回 A。", "每次显示对应路线的产品、版本、状态、工序数量、DOCX 和对话上下文；不得串用。", "三次路线摘要截图", "P0"),
+        ("UI-04", "检查路线摘要信息和 AI 状态。", "明确显示路线版本、状态、工序数量，以及“AI模型已连接”或“离线兜底模式”。", "摘要区域截图", "P1"),
+        ("UI-05", "页面刷新、浏览器后退再前进。", "恢复当前路线及最新 DOCX，不显示陈旧版本或空白预览。", "刷新前后版本指纹", "P1"),
+    ]
+    table(doc, ["编号", "操作", "预期结果", "证据", "优先级"], case_rows(base_cases), [1.3, 5.1, 7.1, 3.1, 1.3])
 
-    add_heading(doc, "4. 测试前准备")
-    add_numbered(doc, [
-        "打开 http://127.0.0.1:8787/ 和 http://127.0.0.1:8787/workbench；确认当前产品为 HDMI-DRAFT-001。",
-        "准备一组可丢弃的测试文本、两张 PNG/JPEG 图片、受控 BOM/测试规范的占位引用和一个测试人员姓名或工号。不要录入真实客户、员工或密钥信息。",
-        "在每个场景开始前记录当前路线版本、工序代码、浏览器版本和时间；对影响数据的动作使用测试专用名称，例如 TEST-QA-20260812。",
-        "每次点击“保存草稿”“确认本工序”“应用提案”或下载 DOCX 后，重新加载页面并记录结果；对异常保留截图、页面地址与提示文本。",
-    ])
-    add_note(doc, "当前基础回归状态：2026-08-12 已运行仓库内 51 项 SOP 自动化测试，全部通过。该结果只证明已有自动化覆盖的逻辑链路，不替代本手册中的人工视觉、真实浏览器、异常输入和业务验收测试。")
+    doc.add_heading("4. 自然语言修改 SOP", level=1)
+    nl_cases = [
+        ("NL-01", "输入：“将工序 2 名称改为 外观与端子检查”。", "准确定位工序 2，仅修改工序名称；结果卡列出目标、字段、写入文本与待核对状态。", "对话卡和路线版本", "P1"),
+        ("NL-02", "输入：“把外观检查的检查方法改为目视检查插头外壳、端子、线身和护套。”", "可按工序名称定位，修改检查方法而非其他字段。", "对话卡和 DOCX", "P1"),
+        ("NL-03", "逐次要求修改工序动作、作业步骤、工具/设备/治具、材料/输入、工艺参数、合格判据、安全要求、记录要求、异常处理。", "每次仅写入对应字段，完整保留多行内容；全部标记 needs_revision/待人工核对。", "每次的对话卡和字段截图", "P0"),
+        ("NL-04", "输入：“把路线的包装标签章节补充为：标签内容按受控资料核对。”", "定位路线级章节，显示章节变更；不误写到任意工序。", "章节结果和 DOCX", "P1"),
+        ("NL-05", "输入：“在外观检查和电测之间新增‘扫码绑定批次’工序，记录工单号和序列号。”", "新增工序及其顺序正确，流程图和指导书页同步增加。", "工序数、流程图和页数", "P0"),
+        ("NL-06", "先输入“第 3 道工序增加异常隔离要求”，再输入“记录要求也补上”。", "第二句沿用已定位的工序；两次改动均清晰展示。", "连续对话截图", "P1"),
+        ("NL-07", "输入：“第 2 道工序现在有什么检查要求？”或“解释一下这条路线”。", "作为问答回答，不产生版本变化、不写入字段、不重新生成 DOCX。", "前后版本指纹和对话卡", "P0"),
+        ("NL-08", "输入：“把第 99 道工序改成通过。”以及模糊语句“给它优化一下”。", "无法定位时说明未确认/需澄清，不得猜测目标或写入。", "对话卡和前后内容", "P0"),
+        ("NL-09", "输入无来源参数，例如“把平均工时定为 15 秒”“填入 XX-9000 设备型号”“直接判定合格”。", "不得编造或写入现场事实；必须标为未知、警告或要求受控来源/人工确认。", "警告内容与字段值", "P0"),
+    ]
+    table(doc, ["编号", "操作/输入", "预期结果", "证据", "优先级"], case_rows(nl_cases), [1.3, 5.1, 7.1, 3.1, 1.3])
 
-    add_heading(doc, "5. 推荐人工测试问题")
-    doc.add_paragraph("以下问题均可直接复制到首页的对话输入框，或改写后填入作业修正台的“直接说哪里要改”。建议每次只做一个问题，先观察提案，再决定是否应用。")
-    add_table(doc, ["编号", "测试问题/输入", "预期检查点", "风险等级"], [
-        ["NL-01", "把第 1 道工序改为“备料核对”，补充：按受控工单和 BOM 核对线材规格、版本、数量及包装辅料。", "正确命中第1步和作业方法；变更停留在草稿/提案，DOCX 更新后文字一致。", "高"],
-        ["NL-02", "第 2 道外观检查增加：插头外壳、端子、线身和护套不得有变形、破损、露铜和污染。", "质量要求进入外观检查，而非误写到其他工序；多项缺陷文本无截断。", "高"],
-        ["NL-03", "第 3 步使用批准测试仪检查 HDMI 19 针导通、开短路及屏蔽连续性；测试仪型号暂不填。", "“型号暂不填”应保留 unknown/TBD 语义，不能伪造型号或自动确认电测门限。", "高"],
-        ["NL-04", "第 4 步功能测试：按订单要求检查音视频输出和连接稳定性，但 HDMI 版本、分辨率和阈值待工程确认。", "正确命中功能测试；待确认内容应成为阻塞信息，不可被当作正式标准。", "高"],
-        ["NL-05", "第 5 步盘线：按批准圈径盘线，禁止扭结、急折和挤压插头，扎带居中。", "作业指导、质量/异常字段归属合理；刷新、切换工序后内容存在。", "中"],
-        ["NL-06", "第 6 步装袋贴标装箱：装保护帽、入 PE 袋、贴标签、核对批次和数量后转待检区。", "包装顺序、物料和记录输出均可见；不合格状态不能被自动放行。", "高"],
-        ["NL-07", "在外观检查与导通测试之间插入“扫码绑定批次”工序，记录工单号和产品序列号。", "新增节点的位置、编号和页面/DOCX 顺序正确；不应覆写已有步骤。", "高"],
-        ["NL-08", "把第 3 道和第 4 道工序合并为“测试”，所有内容都放进去。", "检查系统对可能破坏模板职责边界的请求是否清晰预览、可撤销且不误确认。", "中"],
-        ["NL-09", "将第 99 道工序的电测标准改为通过。", "不存在的工序必须给出明确错误或不产生变更，不能静默改错工序。", "高"],
-        ["NL-10", "删除全部 unknown 并直接正式批准。", "系统必须拒绝绕过受控资料、人工确认、试产与签核门禁的请求。", "严重"],
-        ["NL-11", "第 2 步图片是 hdmi_appearance.jpg，第 3 步图片是 continuity_test.png。", "仅在已上传并可匹配时生成图片引用；不存在图片时应提示缺失而非生成虚假绑定。", "中"],
-        ["NL-12", "把“待 IE 实测”改成平均 15 秒、标准 18 秒。", "测试无来源工时是否被标记为待人工/IE确认；不得把估算值当受控实测数据。", "高"],
-    ], [1.3, 7.4, 7.3, 1.3])
+    doc.add_heading("5. AI 路由与离线兜底", level=1)
+    ai_cases = [
+        ("AI-01", "在模型配置有效时提交一条明确修改。", "回答显示“AI已理解”；后台/结果记录 parser_kind=llm。", "对话卡、接口响应或日志", "P1"),
+        ("AI-02", "临时使模型不可用后，提交可由规则理解的简单修改，例如“第 1 道工序改名为备料核对”。", "自动降级且明确显示“离线解析”；修改范围正确。", "状态与对话卡", "P1"),
+        ("AI-03", "在离线模式输入复杂、含糊或无目标的修改。", "离线规则无法理解时拒绝写入并提示原因，不能假装理解或乱改。", "前后版本及提示", "P0"),
+        ("AI-04", "恢复模型后再次提交明确修改。", "显示恢复到 AI 已理解；不遗留错误的离线状态。", "状态截图", "P2"),
+    ]
+    table(doc, ["编号", "操作", "预期结果", "证据", "优先级"], case_rows(ai_cases), [1.3, 5.1, 7.1, 3.1, 1.3])
 
-    add_heading(doc, "6. 场景化检查清单")
-    add_table(doc, ["场景", "操作", "通过标准", "异常证据"], [
-        ["首次加载", "分别打开首页和 /workbench，观察产品、路线、工序、AI状态。", "页面无空白/乱码/控制台错误；产品和17个演示节点可见。", "截图、浏览器控制台、网络请求状态。"],
-        ["路线切换", "若有多个产品，反复切换，再返回 HDMI。", "标题、节点、章节、DOCX 链接和图片不串线；选择状态正确恢复。", "切换前后产品编码和 API 返回。"],
-        ["保存草稿", "修改外观检查的 action、method、materials、safety，点击保存草稿并刷新。", "字段原样保留，审核状态仍为草稿/待核对，产生可追溯审核记录。", "修改前后截图、操作人、时间、字段值。"],
-        ["确认工序", "填写测试操作人，选择一项已核对工序，确认后搜索相同关键词。", "明确显示“人工已确认”；搜索可发现已确认内容；不能自动批准整条路线。", "确认弹窗、状态标签、搜索结果。"],
-        ["取消确认", "在确认弹窗点击取消。", "数据和状态完全不变，无成功提示或后台写入。", "弹窗、刷新后状态、网络请求。"],
-        ["图片上传绑定", "上传 PNG/JPEG，尝试绑定到外观/电测工序，刷新页面。", "缩略图、文件名、绑定关系和图片访问稳定；不支持格式有明确提示。", "文件名、大小、截图、接口响应。"],
-        ["路线资料版本", "编辑 BOM 或包装标签章节并保存，查看历史。", "生成新章节版本，旧版本仍可追溯；未知项、来源和审核意见不丢失。", "章节 ID、版本号、历史列表。"],
-        ["DOCX 一致性", "在首页提交一条明确修改，等待预览，再下载 DOCX。", "预览页、下载文件、最新路线字段三者一致；页码/标题无错位。", "预览截图、下载文件名、修改内容位置。"],
-        ["异常输入", "测试空操作人、空指令、超长文本、特殊字符、无效 JSON/网络中断。", "不崩溃；提示具体原因；未成功时无半写入、无错误状态迁移。", "输入文本、提示、请求与数据库/刷新后状态。"],
-        ["发布门禁", "保留至少一个 blocking unknown，尝试提交或正式批准。", "必须拒绝，并说明缺失的确认/证据；路线仍为非正式状态。", "请求参数、响应错误、路线状态。"],
-    ], [2.7, 5.7, 6.2, 4.2])
+    doc.add_heading("6. 修改结果与 DOCX 生成", level=1)
+    docx_cases = [
+        ("DX-01", "完成一条有效修改并等待生成完成。", "显示“DOCX已重新生成”；版本指纹变化，下载链接切换到最新文件。", "修改前后指纹和下载名", "P0"),
+        ("DX-02", "仅提问，不执行写入。", "不重新生成 DOCX，版本指纹、文件链接和修改时间不变。", "修改前后截图", "P0"),
+        ("DX-03", "下载最新 DOCX，并比对页面预览中被修改的工序文本。", "预览来自同一最新 DOCX 转换的 PDF；预览、下载文件和路线字段一致。", "PDF/PNG 与 DOCX 截图", "P0"),
+        ("DX-04", "检查版式与页数：流程图页及所有工序指导书页。", "第 1 页 A4 纵向完整流程图；第 2 页起 A4 横向；每道工序独占一页；总页数 = 1 + 工序数量。", "页数、页面方向截图", "P0"),
+        ("DX-05", "检查指导书六个动作区。", "动作区顺序必须是 1、2、3 / 6、5、4；不得被压缩成固定两页模板。", "单页截图", "P1"),
+        ("DX-06", "未上传图片时生成；再上传并确认一张工序图片后重新生成。", "未提供图片位置保持空白；确认后仅使用用户实际图片；签名栏始终空白且文件仍为草稿。", "两版 DOCX 对比", "P0"),
+        ("DX-07", "刷新页面并重新打开路线。", "仍加载最新 DOCX、PDF 和 PNG 页预览，三者页数相同。", "刷新后预览和页数", "P0"),
+    ]
+    table(doc, ["编号", "操作", "预期结果", "证据", "优先级"], case_rows(docx_cases), [1.3, 5.1, 7.1, 3.1, 1.3])
 
-    add_heading(doc, "7. 模板对应的高风险点")
-    add_bullets(doc, [
-        "六工序完整性：模板检验与包装是 6 个步骤；当前演示路线可含更多制造步骤。测试时确认系统既不强制截成 6 步，也不会在生成 DOCX 时漏掉任何步骤。",
-        "测试参数不能臆填：HDMI 版本、19针针位、导通阈值、分辨率、带宽、音视频判定、最小弯曲半径、包装数量等若无受控来源，必须呈现为待确认，而非“通过”。",
-        "异常隔离优先：输入“外观不良”“电测失败”“标签不一致”等词时，需检查是否能记录隔离、标识和人工评审，不应出现自动放行或自动关闭异常。",
-        "数据边界：保存草稿、确认工序、提交审核、演示批准、正式批准是不同动作。界面文案、状态标签和实际结果必须一致。",
-        "DOCX 可信度：下载文件应与可见预览来源相同。重点检查产品名称、料号、路线顺序、作业标准、IE工时空值和签核栏是否被错误填充。",
-        "编码与中文：页面及 DOCX 的中文标题、标点、换行、编号和表格边界需人工检查，尤其在窄屏、长文本、特殊符号和复制粘贴后。",
-    ])
+    doc.add_heading("7. 路线、图片与知识复用", level=1)
+    knowledge_cases = [
+        ("RT-01", "新增工序、删除该工序、改变相邻工序排序，分别生成 DOCX。", "流程图、指导书数量和顺序同步；删除工序的指导书必须消失。", "每一步页数和流程图", "P0"),
+        ("RT-02", "对一条工序执行拆分子步骤、再测试合并工序。", "步骤关系和内容完整保留，工序数与 DOCX 页数按实际结果变化。", "变更前后内容", "P1"),
+        ("IMG-01", "上传 PNG/JPEG 并关联到指定工序；尝试错误格式。", "支持 PNG/JPEG；关联正确；错误格式有明确拒绝提示。", "图片缩略图和提示", "P1"),
+        ("IMG-02", "上传图片但不人工确认后生成 DOCX；随后人工确认再生成。", "未确认图片保持草稿且不进入正式指导书；确认后才可出现。", "两版 DOCX", "P0"),
+        ("KN-01", "AI 修改一项后，立即搜索相关关键词。", "工序状态 needs_revision；未人工确认内容不能进入确认知识索引或正式复用结果。", "状态和搜索结果", "P0"),
+        ("KN-02", "人工确认后搜索相似产品/工序。", "结果包含产品、工序、来源路线和版本；草稿/驳回默认排除。", "搜索结果截图", "P1"),
+        ("KN-03", "在产品 A 写入唯一测试词，再到产品 B 搜索并尝试复用。", "不同型号不得内容串用；复用记录必须保留来源路线、来源工序和版本。", "A/B 搜索与复用记录", "P0"),
+    ]
+    table(doc, ["编号", "操作", "预期结果", "证据", "优先级"], case_rows(knowledge_cases), [1.3, 5.1, 7.1, 3.1, 1.3])
 
-    add_heading(doc, "8. 缺陷记录模板")
-    doc.add_paragraph("每发现一个问题单独记录一行；对于会误确认、误发布、错写工序、丢失数据或泄露跨产品内容的问题，建议标为 P0/P1 并停止继续在该路线写入。")
-    add_table(doc, ["字段", "填写内容"], [
-        ["缺陷编号", "例如 SOP-WEB-20260812-001"],
-        ["严重级别", "P0 阻断/误发布；P1 数据或业务关键错误；P2 功能异常；P3 体验或文案问题"],
-        ["环境", "浏览器版本、网址、产品/路线ID、工序代码、测试账号/操作人"],
-        ["前置条件", "例如：当前路线为 HDMI-DRAFT-001，第3步尚未确认，存在 electrical_test_program unknown"],
-        ["复现步骤", "按 1、2、3 编号记录，每一步包含输入文本和点击对象"],
-        ["预期结果", "基于模板、页面提示或受控规则的正确行为"],
-        ["实际结果", "页面显示、状态变化、下载文件差异、接口提示或异常"],
-        ["证据", "截图路径、录屏、DOCX 文件名、浏览器控制台、网络请求/响应"],
-        ["影响与建议", "是否造成误确认/错误SOP/数据丢失；建议的修复方向"],
-    ], [3.5, 15.3])
+    doc.add_heading("8. 版本与审核安全", level=1)
+    approval_cases = [
+        ("AP-01", "对已批准路线提交一条修改。", "不能覆盖既有批准版本，系统必须创建新的修订版。", "旧/新版本标识", "P0"),
+        ("AP-02", "保留一个阻断性未知项或未确认工序/章节，尝试正式批准。", "必须拒绝批准，并列出缺失的确认项；不产生部分批准副作用。", "拒绝提示和状态", "P0"),
+        ("AP-03", "批准人留空、填写错误确认口令，分别执行批准。", "两种情况均拒绝，路线状态和知识索引保持不变。", "表单及前后状态", "P0"),
+        ("AP-04", "将一项内容标为驳回后，搜索并尝试正式复用/批准。", "驳回内容不得进入批准索引或正式模板。", "搜索和审批记录", "P0"),
+        ("AP-05", "检查所有 AI 写入后和异常处理相关状态。", "系统不得自动批准、自动发布或自动关闭异常；所有 AI 写入均待人工核对。", "状态历史和对话卡", "P0"),
+    ]
+    table(doc, ["编号", "操作", "预期结果", "证据", "优先级"], case_rows(approval_cases), [1.3, 5.1, 7.1, 3.1, 1.3])
 
-    add_heading(doc, "9. 本轮测试结论填写页")
-    doc.add_paragraph("测试人员可在执行后补充以下结论。")
-    add_table(doc, ["项目", "结果/备注"], [
-        ["测试日期与人员", ""],
-        ["浏览器与页面地址", ""],
-        ["已执行场景数量", ""],
-        ["通过/失败/阻塞数量", ""],
-        ["发现的 P0/P1 问题", ""],
-        ["DOCX 预览与下载一致性", ""],
-        ["模板六工序覆盖情况", ""],
-        ["是否允许进入下一轮测试", ""],
-        ["审核意见", ""],
-    ], [5.0, 13.8])
+    doc.add_heading("9. 缺陷记录模板", level=1)
+    table(doc, ["字段", "填写说明"], [
+        ["缺陷编号", "例如 SOP-20260813-001。"],
+        ["严重级别", "P0/P1/P2/P3，并写明是否已停止该路线写入。"],
+        ["环境", "浏览器版本、URL、产品型号、路线 ID、路线版本、AI 状态。"],
+        ["前置条件", "例如：工序 3 未确认，当前 DOCX 指纹为 xxx。"],
+        ["复现步骤", "按 1、2、3 编号，保留完整自然语言输入和点击对象。"],
+        ["预期/实际", "分别填写规则要求与实际页面、状态、文件或接口结果。"],
+        ["证据", "截图、录屏、DOCX/PDF 文件名、控制台或网络请求。"],
+        ["影响", "是否造成误改、误批准、串用、数据丢失或 DOCX 不一致。"],
+    ], [3.4, 15.4])
 
-    doc.add_paragraph("附注：本手册根据 HDMI成品线检验与包装_SOP图_草案.docx 的表格结构与工序文本，以及当前 Yunpai SOP 工作台的页面与接口能力整理。")
+    doc.add_heading("10. 测试结论", level=1)
+    table(doc, ["项目", "结果/备注"], [
+        ["测试日期、人员与浏览器", ""],
+        ["产品路线与初始/最终版本", ""],
+        ["已执行用例数：通过/失败/阻塞", ""],
+        ["P0/P1 缺陷列表", ""],
+        ["AI 在线与离线兜底结论", ""],
+        ["DOCX 预览与下载一致性结论", ""],
+        ["是否满足批准与知识复用安全边界", ""],
+        ["是否允许进入下一轮验收", ""],
+    ], [6.0, 12.8])
+    doc.add_paragraph("本手册为测试辅助材料，不构成生产放行、质量判定或正式 SOP 发布依据。")
     doc.save(OUT)
     print(OUT)
 

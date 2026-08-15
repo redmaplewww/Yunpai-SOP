@@ -7,7 +7,7 @@ import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel
@@ -32,11 +32,26 @@ class ApprovalRequest(BaseModel):
 
 class ReorderRequest(BaseModel):
     ordered_step_ids: list[int]
+    reviewer: str = "web_reviewer"
 
 
 class MergeRequest(BaseModel):
     target_step_id: int
     source_step_ids: list[int]
+    reviewer: str
+    title: str | None = None
+
+
+class ReviewableStepRequest(BaseModel):
+    title: str
+    reviewer: str
+    before_step_id: int | None = None
+    note: str = ""
+
+
+class ReviewableSplitRequest(BaseModel):
+    mode: Literal["actions", "independent"]
+    titles: list[str]
     reviewer: str
 
 
@@ -64,6 +79,21 @@ class MediaLinkRequest(BaseModel):
     caption: str = ""
 
 
+class MediaBindingItem(BaseModel):
+    step_id: int
+    asset_id: int
+    caption: str = ""
+
+
+class MediaBindingLayoutRequest(BaseModel):
+    bindings: list[MediaBindingItem]
+    reviewer: str
+
+
+class MediaLinkConfirmRequest(BaseModel):
+    reviewer: str
+
+
 class StepConfirmRequest(BaseModel):
     reviewer: str
     comment: str = ""
@@ -73,6 +103,142 @@ class ChatRequest(BaseModel):
     message: str
     worker: str
     use_ai: bool = True
+    selected_step_id: int | None = None
+    pending_message_id: int | None = None
+
+
+def _regenerate_document_after_route_change(
+    documents: SopDocumentService,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep a completed route mutation successful when preview tooling is unavailable."""
+    try:
+        result["document"] = (
+            documents.latest(result["route_id"])
+            if result.get("changed") is False
+            else documents.generate(result["route_id"])
+        )
+        if result["document"].get("preview_status") == "failed":
+            result["document_error"] = result["document"]["preview_error"]
+            result["document_status"] = "preview_failed"
+    except Exception as exc:
+        message = str(exc)
+        result["document"] = None
+        result["document_error"] = message
+        result["document_status"] = (
+            "preview_failed" if message.startswith("DOCX 已生成，但预览转换失败")
+            else "generation_failed"
+        )
+    return result
+
+
+def _add_step_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    route_id: int,
+    step: RouteStepDraft,
+) -> dict[str, Any]:
+    step_id = store.add_step(route_id, step)
+    route = store.get_route(route_id)
+    page_number = next(index + 2 for index, item in enumerate(route["steps"]) if item["id"] == step_id)
+    return _regenerate_document_after_route_change(documents, {
+        "status": "added",
+        "changed": True,
+        "route_id": route_id,
+        "step_id": step_id,
+        "step_title": step.title,
+        "affected_step_ids": [step_id],
+        "page_number": page_number,
+    })
+
+
+def _split_step_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    step_id: int,
+    child: RouteStepDraft,
+) -> dict[str, Any]:
+    parent = _find_step(store, step_id)
+    child.parent_step_code = parent["step_code"]
+    child_id = store.add_step(parent["route_id"], child)
+    route = store.get_route(parent["route_id"])
+    page_number = next(index + 2 for index, item in enumerate(route["steps"]) if item["id"] == child_id)
+    return _regenerate_document_after_route_change(documents, {
+        "status": "split",
+        "changed": True,
+        "route_id": parent["route_id"],
+        "parent_step_id": step_id,
+        "step_id": child_id,
+        "step_title": child.title,
+        "affected_step_ids": [step_id, child_id],
+        "page_number": page_number,
+    })
+
+
+def _link_media_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    step_id: int,
+    asset_id: int,
+    caption: str = "",
+) -> dict[str, Any]:
+    link_id = store.link_media_asset(step_id, asset_id, caption=caption)
+    step = _find_step(store, step_id)
+    return _regenerate_document_after_route_change(documents, {
+        "status": "draft_linked",
+        "changed": True,
+        "route_id": step["route_id"],
+        "step_id": step_id,
+        "link_id": link_id,
+    })
+
+
+def _save_media_layout_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    route_id: int,
+    bindings: list[dict[str, Any]],
+    reviewer: str,
+) -> dict[str, Any]:
+    result = store.replace_route_media_bindings(route_id, bindings, reviewer=reviewer)
+    return _regenerate_document_after_route_change(documents, result)
+
+
+def _confirm_media_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    link_id: int,
+    reviewer: str,
+) -> dict[str, Any]:
+    result = store.confirm_media_link(link_id, reviewer=reviewer)
+    return _regenerate_document_after_route_change(documents, result)
+
+
+def _delete_media_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    asset_id: int,
+) -> dict[str, Any]:
+    result = store.delete_media_asset(asset_id)
+    result["changed"] = True
+    return _regenerate_document_after_route_change(documents, result)
+
+
+def _confirm_step_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    step_id: int,
+    reviewer: str,
+    comment: str = "",
+) -> dict[str, Any]:
+    result = store.confirm_step(step_id, reviewer=reviewer, comment=comment)
+    result["route_id"] = _find_step(store, step_id)["route_id"]
+    result["changed"] = True
+    return _regenerate_document_after_route_change(documents, result)
 
 
 def create_review_app(db_path: str | Path):
@@ -102,6 +268,10 @@ def create_review_app(db_path: str | Path):
     def workbench() -> str:
         return REVIEW_HTML
 
+    @app.get("/media-arrangement", response_class=HTMLResponse)
+    def media_arrangement() -> str:
+        return MEDIA_ARRANGEMENT_HTML
+
     @app.get("/api/products")
     def products() -> list[dict[str, Any]]:
         return store.list_products()
@@ -127,7 +297,13 @@ def create_review_app(db_path: str | Path):
                 documents,
                 assistant=NaturalLanguageSopAssistant(use_llm=False),
             )
-        return guard(lambda: service.chat(route_id, request.message, worker=request.worker))
+        return guard(lambda: service.chat(
+            route_id,
+            request.message,
+            worker=request.worker,
+            selected_step_id=request.selected_step_id,
+            pending_message_id=request.pending_message_id,
+        ))
 
     @app.get("/api/routes/{route_id}/documents/latest")
     def latest_document(route_id: int) -> dict[str, Any]:
@@ -176,8 +352,32 @@ def create_review_app(db_path: str | Path):
 
     @app.post("/api/media/link")
     def link_media(request: MediaLinkRequest) -> dict[str, Any]:
-        link_id = guard(lambda: store.link_media_asset(request.step_id, request.asset_id, caption=request.caption))
-        return {"status": "draft_linked", "link_id": link_id}
+        return guard(lambda: _link_media_and_regenerate(
+            store,
+            documents,
+            step_id=request.step_id,
+            asset_id=request.asset_id,
+            caption=request.caption,
+        ))
+
+    @app.post("/api/routes/{route_id}/media/bindings")
+    def save_media_bindings(route_id: int, request: MediaBindingLayoutRequest) -> dict[str, Any]:
+        return guard(lambda: _save_media_layout_and_regenerate(
+            store,
+            documents,
+            route_id=route_id,
+            bindings=[item.model_dump(mode="json") for item in request.bindings],
+            reviewer=request.reviewer,
+        ))
+
+    @app.post("/api/media/links/{link_id}/confirm")
+    def confirm_media_link(link_id: int, request: MediaLinkConfirmRequest) -> dict[str, Any]:
+        return guard(lambda: _confirm_media_and_regenerate(
+            store,
+            documents,
+            link_id=link_id,
+            reviewer=request.reviewer,
+        ))
 
     @app.get("/api/media/{asset_id}")
     def media_file(asset_id: int):
@@ -187,11 +387,17 @@ def create_review_app(db_path: str | Path):
 
     @app.delete("/api/media/{asset_id}")
     def delete_media(asset_id: int) -> dict[str, Any]:
-        return guard(lambda: store.delete_media_asset(asset_id))
+        return guard(lambda: _delete_media_and_regenerate(store, documents, asset_id))
 
     @app.post("/api/steps/{step_id}/confirm")
     def confirm_step(step_id: int, request: StepConfirmRequest) -> dict[str, Any]:
-        return guard(lambda: store.confirm_step(step_id, reviewer=request.reviewer, comment=request.comment))
+        return guard(lambda: _confirm_step_and_regenerate(
+            store,
+            documents,
+            step_id=step_id,
+            reviewer=request.reviewer,
+            comment=request.comment,
+        ))
 
     @app.get("/api/knowledge/search")
     def search_knowledge(q: str, route_id: int | None = None, limit: int = 10) -> list[dict[str, Any]]:
@@ -225,30 +431,66 @@ def create_review_app(db_path: str | Path):
 
     @app.post("/api/routes/{route_id}/steps")
     def add_step(route_id: int, step: RouteStepDraft) -> dict[str, Any]:
-        step_id = guard(lambda: store.add_step(route_id, step))
-        return {"status": "added", "step_id": step_id}
+        return guard(lambda: _add_step_and_regenerate(store, documents, route_id, step))
+
+    @app.post("/api/routes/{route_id}/steps/reviewable")
+    def add_reviewable_step(route_id: int, request: ReviewableStepRequest) -> dict[str, Any]:
+        result = guard(lambda: store.add_reviewable_step(
+            route_id,
+            title=request.title,
+            reviewer=request.reviewer,
+            before_step_id=request.before_step_id,
+            note=request.note,
+        ))
+        return _regenerate_document_after_route_change(documents, result)
+
+    @app.get("/api/routes/{route_id}/step-deletions/recent")
+    def recent_step_deletions(route_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        return guard(lambda: store.list_recent_step_deletions(route_id, limit=limit))
 
     @app.post("/api/steps/{step_id}/split")
     def split_step(step_id: int, child: RouteStepDraft) -> dict[str, Any]:
-        parent = guard(lambda: _find_step(store, step_id))
-        child.parent_step_code = parent["step_code"]
-        child_id = guard(lambda: store.add_step(parent["route_id"], child))
-        return {"status": "split", "parent_step_id": step_id, "child_step_id": child_id}
+        return guard(lambda: _split_step_and_regenerate(store, documents, step_id, child))
+
+    @app.post("/api/steps/{step_id}/split/reviewable")
+    def split_reviewable_step(step_id: int, request: ReviewableSplitRequest) -> dict[str, Any]:
+        if request.mode == "actions":
+            result = guard(lambda: store.split_step_actions(
+                step_id, titles=request.titles, reviewer=request.reviewer
+            ))
+        else:
+            result = guard(lambda: store.split_step_independent(
+                step_id, titles=request.titles, reviewer=request.reviewer
+            ))
+        return _regenerate_document_after_route_change(documents, result)
 
     @app.delete("/api/steps/{step_id}")
-    def delete_step(step_id: int) -> dict[str, Any]:
-        guard(lambda: store.delete_step(step_id))
-        return {"status": "deleted", "step_id": step_id}
+    def delete_step(step_id: int, deleted_by: str = "web_reviewer") -> dict[str, Any]:
+        result = guard(lambda: store.delete_step(step_id, deleted_by=deleted_by))
+        return _regenerate_document_after_route_change(documents, result)
+
+    @app.post("/api/step-deletions/{deletion_token}/undo")
+    def undo_step_deletion(deletion_token: str, request: ReviewerRequest) -> dict[str, Any]:
+        result = guard(lambda: store.restore_step_deletion(deletion_token, reviewer=request.reviewer))
+        return _regenerate_document_after_route_change(documents, result)
 
     @app.post("/api/routes/{route_id}/reorder")
     def reorder(route_id: int, request: ReorderRequest) -> dict[str, Any]:
-        guard(lambda: store.reorder_steps(route_id, request.ordered_step_ids))
-        return {"status": "reordered", "route_id": route_id}
+        result = guard(lambda: store.reorder_steps(
+            route_id, request.ordered_step_ids, reviewer=request.reviewer
+        ))
+        return _regenerate_document_after_route_change(documents, result)
 
     @app.post("/api/routes/{route_id}/merge")
     def merge(route_id: int, request: MergeRequest) -> dict[str, Any]:
-        guard(lambda: store.merge_steps(route_id, request.target_step_id, request.source_step_ids, reviewer=request.reviewer))
-        return {"status": "merged", "route_id": route_id}
+        result = guard(lambda: store.merge_steps(
+            route_id,
+            request.target_step_id,
+            request.source_step_ids,
+            reviewer=request.reviewer,
+            title=request.title,
+        ))
+        return _regenerate_document_after_route_change(documents, result)
 
     @app.post("/api/routes/{route_id}/reviews")
     def start_review(route_id: int, request: ReviewerRequest) -> dict[str, Any]:
@@ -340,6 +582,8 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                 self._send(200, SIMPLE_REVIEW_HTML, "text/html; charset=utf-8")
             elif path == "/workbench":
                 self._send(200, REVIEW_HTML, "text/html; charset=utf-8")
+            elif path == "/media-arrangement":
+                self._send(200, MEDIA_ARRANGEMENT_HTML, "text/html; charset=utf-8")
             elif path == "/api/products":
                 self._run(store.list_products)
             elif path == "/api/assistant/status":
@@ -352,6 +596,9 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             elif match := re.fullmatch(r"/api/routes/(\d+)/chat/history", path):
                 limit = int(query.get("limit", ["40"])[0])
                 self._run(lambda: store.list_chat_messages(int(match.group(1)), limit=limit))
+            elif match := re.fullmatch(r"/api/routes/(\d+)/step-deletions/recent", path):
+                limit = int(query.get("limit", ["20"])[0])
+                self._run(lambda: store.list_recent_step_deletions(int(match.group(1)), limit=limit))
             elif match := re.fullmatch(r"/api/routes/(\d+)/documents/latest", path):
                 self._run(lambda: documents.latest(int(match.group(1)), generate_if_missing=True))
             elif match := re.fullmatch(r"/api/routes/(\d+)/documents/latest\.docx", path):
@@ -419,13 +666,20 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             self._send(404, {"detail": "not found"})
 
         def do_DELETE(self) -> None:
-            if match := re.fullmatch(r"/api/media/(\d+)", self.path):
+            parsed = urlparse(self.path)
+            path = parsed.path
+            query = parse_qs(parsed.query)
+            if match := re.fullmatch(r"/api/media/(\d+)", path):
                 asset_id = int(match.group(1))
-                self._run(lambda: store.delete_media_asset(asset_id))
+                self._run(lambda: _delete_media_and_regenerate(store, documents, asset_id))
                 return
-            if match := re.fullmatch(r"/api/steps/(\d+)", self.path):
+            if match := re.fullmatch(r"/api/steps/(\d+)", path):
                 step_id = int(match.group(1))
-                self._run(lambda: (store.delete_step(step_id), {"status": "deleted", "step_id": step_id})[1])
+                deleted_by = query.get("deleted_by", ["web_reviewer"])[0]
+                def delete() -> dict[str, Any]:
+                    result = store.delete_step(step_id, deleted_by=deleted_by)
+                    return _regenerate_document_after_route_change(documents, result)
+                self._run(delete)
                 return
             self._send(404, {"detail": "not found"})
 
@@ -440,10 +694,22 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                         documents,
                         assistant=NaturalLanguageSopAssistant(use_llm=False),
                     )
-                self._run(lambda: service.chat(route_id, body["message"], worker=body["worker"]))
+                self._run(lambda: service.chat(
+                    route_id,
+                    body["message"],
+                    worker=body["worker"],
+                    selected_step_id=body.get("selected_step_id"),
+                    pending_message_id=body.get("pending_message_id"),
+                ))
                 return
             if match := re.fullmatch(r"/api/routes/(\d+)/documents/generate", self.path):
                 self._run(lambda: documents.generate(int(match.group(1))))
+                return
+            if match := re.fullmatch(r"/api/step-deletions/([A-Za-z0-9_-]+)/undo", self.path):
+                def undo_deletion() -> dict[str, Any]:
+                    result = store.restore_step_deletion(match.group(1), reviewer=body["reviewer"])
+                    return _regenerate_document_after_route_change(documents, result)
+                self._run(undo_deletion)
                 return
             if match := re.fullmatch(r"/api/routes/(\d+)/nl/preview", self.path):
                 route_id = int(match.group(1))
@@ -468,16 +734,99 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                 self._run(upload)
                 return
             if self.path == "/api/media/link":
-                self._run(lambda: {"status": "draft_linked", "link_id": store.link_media_asset(int(body["step_id"]), int(body["asset_id"]), caption=body.get("caption", ""))})
+                self._run(lambda: _link_media_and_regenerate(
+                    store,
+                    documents,
+                    step_id=int(body["step_id"]),
+                    asset_id=int(body["asset_id"]),
+                    caption=body.get("caption", ""),
+                ))
+                return
+            if match := re.fullmatch(r"/api/routes/(\d+)/media/bindings", self.path):
+                route_id = int(match.group(1))
+                request = MediaBindingLayoutRequest.model_validate(body)
+                self._run(lambda: _save_media_layout_and_regenerate(
+                    store,
+                    documents,
+                    route_id=route_id,
+                    bindings=[item.model_dump(mode="json") for item in request.bindings],
+                    reviewer=request.reviewer,
+                ))
+                return
+            if match := re.fullmatch(r"/api/media/links/(\d+)/confirm", self.path):
+                link_id = int(match.group(1))
+                request = MediaLinkConfirmRequest.model_validate(body)
+                self._run(lambda: _confirm_media_and_regenerate(
+                    store,
+                    documents,
+                    link_id=link_id,
+                    reviewer=request.reviewer,
+                ))
                 return
             if match := re.fullmatch(r"/api/steps/(\d+)/confirm", self.path):
-                self._run(lambda: store.confirm_step(int(match.group(1)), reviewer=body["reviewer"], comment=body.get("comment", "")))
+                self._run(lambda: _confirm_step_and_regenerate(
+                    store,
+                    documents,
+                    step_id=int(match.group(1)),
+                    reviewer=body["reviewer"],
+                    comment=body.get("comment", ""),
+                ))
+                return
+            if match := re.fullmatch(r"/api/routes/(\d+)/steps/reviewable", self.path):
+                route_id = int(match.group(1))
+                request = ReviewableStepRequest.model_validate(body)
+                def add_reviewable() -> dict[str, Any]:
+                    result = store.add_reviewable_step(
+                        route_id,
+                        title=request.title,
+                        reviewer=request.reviewer,
+                        before_step_id=request.before_step_id,
+                        note=request.note,
+                    )
+                    return _regenerate_document_after_route_change(documents, result)
+                self._run(add_reviewable)
+                return
+            if match := re.fullmatch(r"/api/steps/(\d+)/split/reviewable", self.path):
+                step_id = int(match.group(1))
+                request = ReviewableSplitRequest.model_validate(body)
+                def split_reviewable() -> dict[str, Any]:
+                    result = (
+                        store.split_step_actions(step_id, titles=request.titles, reviewer=request.reviewer)
+                        if request.mode == "actions"
+                        else store.split_step_independent(step_id, titles=request.titles, reviewer=request.reviewer)
+                    )
+                    return _regenerate_document_after_route_change(documents, result)
+                self._run(split_reviewable)
+                return
+            if match := re.fullmatch(r"/api/routes/(\d+)/reorder", self.path):
+                route_id = int(match.group(1))
+                request = ReorderRequest.model_validate(body)
+                self._run(lambda: _regenerate_document_after_route_change(
+                    documents,
+                    store.reorder_steps(
+                        route_id,
+                        request.ordered_step_ids,
+                        reviewer=request.reviewer,
+                    ),
+                ))
+                return
+            if match := re.fullmatch(r"/api/routes/(\d+)/merge", self.path):
+                route_id = int(match.group(1))
+                request = MergeRequest.model_validate(body)
+                self._run(lambda: _regenerate_document_after_route_change(
+                    documents,
+                    store.merge_steps(
+                        route_id,
+                        request.target_step_id,
+                        request.source_step_ids,
+                        reviewer=request.reviewer,
+                        title=request.title,
+                    ),
+                ))
                 return
             patterns = [
-                (r"/api/routes/(\d+)/steps", lambda value: {"status": "added", "step_id": store.add_step(value, RouteStepDraft.model_validate(body))}),
-                (r"/api/steps/(\d+)/split", lambda value: self._split(value, body)),
-                (r"/api/routes/(\d+)/reorder", lambda value: (store.reorder_steps(value, body["ordered_step_ids"]), {"status": "reordered", "route_id": value})[1]),
-                (r"/api/routes/(\d+)/merge", lambda value: (store.merge_steps(value, body["target_step_id"], body["source_step_ids"], reviewer=body["reviewer"]), {"status": "merged", "route_id": value})[1]),
+                (r"/api/routes/(\d+)/steps", lambda value: _add_step_and_regenerate(store, documents, value, RouteStepDraft.model_validate(body))),
+                (r"/api/steps/(\d+)/split", lambda value: _split_step_and_regenerate(store, documents, value, RouteStepDraft.model_validate(body))),
                 (r"/api/routes/(\d+)/reviews", lambda value: {"status": "draft", "review_session_id": store.create_review_session(value, body["reviewer"], body.get("comment", ""))}),
                 (r"/api/reviews/(\d+)/submit", lambda value: (store.submit_review(value), {"status": "under_review", "review_session_id": value})[1]),
                 (r"/api/reviews/(\d+)/approve", lambda value: {"status": "approved", "route_id": store.approve(value, approved_by=body["approved_by"], approval_scope=body["approval_scope"], confirmation_token=body.get("confirmation_token")), "approval_scope": body["approval_scope"]}),
@@ -489,13 +838,6 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     self._run(lambda call=call, value=int(match.group(1)): call(value))
                     return
             self._send(404, {"detail": "not found"})
-
-        @staticmethod
-        def _split(step_id: int, body: dict[str, Any]) -> dict[str, Any]:
-            parent = _find_step(store, step_id)
-            child = RouteStepDraft.model_validate(body)
-            child.parent_step_code = parent["step_code"]
-            return {"status": "split", "parent_step_id": step_id, "child_step_id": store.add_step(parent["route_id"], child)}
 
     return ThreadingHTTPServer((host, port), ReviewHandler)
 
@@ -514,6 +856,7 @@ def main(argv: list[str] | None = None) -> int:
 
 SIMPLE_REVIEW_HTML = Path(__file__).with_name("simple_workbench.html").read_text(encoding="utf-8")
 REVIEW_HTML = Path(__file__).with_name("workbench.html").read_text(encoding="utf-8")
+MEDIA_ARRANGEMENT_HTML = Path(__file__).with_name("media_arrangement.html").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
