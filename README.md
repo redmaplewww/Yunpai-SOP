@@ -38,7 +38,7 @@ python scripts/generate_sop_template_ai_handoff.py `
   --route-id 1
 ```
 
-HDMI 最终模板 ID 为 `yunpai.sop.hdmi-cable.multi-page.v1`。旧的固定两页 HDMI 路由会失败关闭；USB-C 两页文件只保留为历史参考。
+HDMI 最终模板 ID 为 `yunpai.sop.hdmi-cable.multi-page.v4`。每道工序可独立选择 1～6 个工图格，IE 动作行数会同步调整。旧的固定两页 HDMI 路由会失败关闭；USB-C 两页文件只保留为历史参考。
 
 详细交接规范见 [`docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md`](docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md)。
 

@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工艺流程编辑操作预览</title>
+  <style>
+    :root {
+      --canvas: #f1f0ec;
+      --surface: #ffffff;
+      --surface-soft: #fafaf8;
+      --ink: #202a32;
+      --muted: #6c7578;
+      --line: #d8dad6;
+      --line-strong: #bcc3bf;
+      --green: #226345;
+      --green-soft: #e8f3ec;
+      --blue: #1766a6;
+      --blue-soft: #e8f1f8;
+      --amber: #8c6100;
+      --amber-soft: #fff4d8;
+      --red: #aa3e37;
+      --red-soft: #fff0ee;
+      --shadow: 0 12px 28px rgba(29, 38, 44, .10);
+      --radius: 7px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: 3px solid rgba(23, 102, 166, .24); outline-offset: 2px; }
+    .app { max-width: 1480px; margin: 0 auto; padding: 28px 34px 48px; }
+    .topbar { display: flex; align-items: center; gap: 16px; min-height: 52px; }
+    .eyebrow { font-size: 11px; font-weight: 750; color: var(--blue); letter-spacing: 0; }
+    h1 { margin: 4px 0 0; font-size: 20px; line-height: 1.2; }
+    .topbar-copy { min-width: 0; }
+    .topbar-copy p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .draft-dot { width: 8px; height: 8px; border-radius: 50%; background: #bf861a; }
+    .panel { border: 1px solid var(--line); background: var(--surface); }
+    .flow-panel { margin-top: 18px; }
+    .flow-head { min-height: 64px; display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .flow-head h2 { margin: 0; font-size: 16px; }
+    .flow-summary { min-width: 0; flex: 1; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .action-group { display: flex; align-items: center; gap: 8px; flex: none; }
+    .flow-head .action-group { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); width: min(100%, 318px); min-width: 0; margin-left: auto; }
+    .flow-head .action-group .button { width: 100%; min-width: 0; padding: 0 7px; white-space: nowrap; }
+    .button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--ink); padding: 0 11px; font-size: 12px; font-weight: 700; transition: background .16s ease, border-color .16s ease, color .16s ease; }
+    .button:hover:not(:disabled) { border-color: #82939e; background: #f6f7f6; }
+    .button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+    .button.primary:hover:not(:disabled) { background: #125b96; }
+    .button.danger { border-color: #c98f8a; background: #fff; color: var(--red); }
+    .button.danger:hover:not(:disabled) { border-color: var(--red); background: var(--red-soft); }
+    .button:disabled { opacity: .45; cursor: not-allowed; }
+    .button-icon { width: 17px; height: 17px; display: inline-grid; place-items: center; font-size: 16px; line-height: 1; }
+    .recent-count { display: none; min-width: 17px; height: 17px; align-items: center; justify-content: center; border-radius: 9px; background: var(--red); color: #fff; font-size: 10px; }
+    .recent-count.show { display: inline-flex; }
+    .flow-canvas { padding: 17px 16px 11px; background: var(--surface-soft); overflow-x: auto; scrollbar-color: #aeb6b3 transparent; }
+    .flow-track { min-width: 1070px; display: flex; align-items: center; gap: 0; padding-bottom: 7px; }
+    .step-card { position: relative; width: 168px; min-width: 168px; min-height: 136px; border: 1px solid var(--line); border-left: 4px solid var(--green); background: #fff; padding: 13px 12px 11px; text-align: left; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+    .step-card:hover { border-color: #9aaca5; border-left-color: var(--green); }
+    .step-card.active { border: 2px solid var(--blue); border-left: 4px solid var(--green); background: var(--blue-soft); padding: 12px 11px 10px; }
+    .step-card.selected { border-color: var(--blue); border-left-color: var(--blue); background: #f4f8fd; box-shadow: inset 0 0 0 1px rgba(23,102,166,.12); }
+    .step-card.child { border-left-style: dashed; min-height: 126px; }
+    .step-card .step-code { display: block; padding-right: 24px; color: #32618c; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 10px; font-weight: 800; }
+    .step-card .step-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 10px; font-size: 15px; font-weight: 760; line-height: 1.38; text-wrap: pretty; }
+    .step-card .step-state { display: block; margin-top: 9px; color: var(--green); font-size: 11px; }
+    .step-card.child .step-state { color: var(--amber); }
+    .card-select { display: none; position: absolute; top: 9px; right: 9px; width: 24px; height: 24px; border: 1px solid #aab4bc; border-radius: 5px; background: #fff; color: transparent; }
+    .editing .card-select { display: grid; place-items: center; }
+    .editing .card-select:hover { border-color: var(--blue); background: var(--blue-soft); }
+    .step-card.selected .card-select { border-color: var(--blue); background: var(--blue); color: #fff; }
+    .card-select::after { content: ""; width: 8px; height: 4px; border: solid currentColor; border-width: 0 0 2px 2px; transform: rotate(-45deg) translate(1px, -1px); }
+    .flow-arrow { position: relative; width: 32px; min-width: 32px; height: 1px; background: #9da8a5; }
+    .flow-arrow::after { content: ""; position: absolute; right: 0; top: -4px; width: 7px; height: 7px; border-top: 1px solid #9da8a5; border-right: 1px solid #9da8a5; transform: rotate(45deg); }
+    .flow-arrow.mergeable { height: 2px; background: var(--green); }
+    .flow-arrow.mergeable::after { border-color: var(--green); }
+    .flow-arrow.mergeable .merge-link { display: block; }
+    .merge-link { display: none; position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 3px 6px; border: 1px solid #b5d0bf; border-radius: 4px; background: #fff; color: var(--green); font-size: 10px; font-weight: 750; white-space: nowrap; }
+    .flow-scroll-hint { display: flex; align-items: center; gap: 7px; padding: 0 16px 13px; color: var(--muted); font-size: 11px; }
+    .flow-scroll-line { flex: 1; height: 7px; border-radius: 4px; background: #e4e6e2; overflow: hidden; }
+    .flow-scroll-line::after { content: ""; display: block; width: 43%; height: 100%; border-radius: inherit; background: #adb6b2; }
+    .edit-bar { display: none; min-height: 56px; align-items: center; gap: 12px; padding: 9px 16px; border-top: 1px solid var(--line); background: #fbfcfb; }
+    #flowCanvas.editing ~ .edit-bar { display: flex; }
+    .edit-bar-copy { min-width: 0; flex: 1; font-size: 12px; color: var(--muted); }
+    .edit-bar-copy b { color: var(--ink); }
+    .edit-bar-copy .operation-state { margin-left: 6px; color: var(--muted); }
+    .edit-bar-copy .operation-state.ready { color: var(--green); }
+    .edit-bar-copy .operation-state.warning { color: var(--amber); }
+    .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; margin-top: 16px; }
+    .detail-panel { min-width: 0; }
+    .detail-head { min-height: 85px; display: flex; align-items: flex-start; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+    .detail-code { color: #32618c; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 11px; font-weight: 800; }
+    .detail-head h2 { margin: 4px 0 0; font-size: 20px; }
+    .detail-state { margin: 4px 0 0 auto; padding: 6px 8px; background: var(--green-soft); color: var(--green); font-size: 11px; white-space: nowrap; }
+    .detail-actions { display: flex; gap: 7px; margin-left: auto; }
+    .detail-actions .button { min-height: 34px; }
+    .tabs { display: flex; gap: 21px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+    .tab { min-height: 46px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 0 2px; font-size: 12px; font-weight: 700; }
+    .tab.active { border-color: var(--blue); color: var(--ink); }
+    .instruction { padding: 17px 18px 22px; }
+    .instruction h3 { margin: 0 0 10px; font-size: 13px; }
+    .instruction ol { margin: 0; padding-left: 22px; color: #3f4950; font-size: 13px; line-height: 1.85; }
+    .instruction-note { margin-top: 17px; padding: 10px 11px; border: 1px solid #ead8a3; background: #fff9e9; color: #765800; font-size: 11px; line-height: 1.6; }
+    .media-panel { padding: 15px 17px; }
+    .media-panel h2 { margin: 0; font-size: 14px; }
+    .media-panel p { margin: 6px 0 13px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .media-empty { display: grid; place-items: center; min-height: 122px; border: 1px dashed #b9c1bd; background: #fbfcfb; color: #66716e; font-size: 12px; text-align: center; }
+    .media-empty b { display: block; margin-bottom: 5px; color: var(--blue); font-size: 16px; font-weight: 500; }
+    .modal-backdrop { position: fixed; z-index: 20; inset: 0; display: none; place-items: center; padding: 20px; background: rgba(26, 33, 38, .42); }
+    .modal-backdrop.show { display: grid; }
+    .modal { width: min(520px, 100%); border: 1px solid #cbd0ce; border-radius: 8px; background: #fff; box-shadow: 0 24px 70px rgba(0, 0, 0, .27); overflow: hidden; }
+    .modal-head { display: flex; align-items: flex-start; gap: 12px; padding: 17px 18px 14px; border-bottom: 1px solid var(--line); }
+    .modal-head h2 { margin: 0; font-size: 17px; }
+    .modal-head p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .modal-close { width: 30px; height: 30px; margin-left: auto; border: 0; border-radius: 5px; background: transparent; color: #556066; font-size: 20px; line-height: 1; }
+    .modal-close:hover { background: #f0f1ef; }
+    .modal-body { padding: 16px 18px; }
+    .affected-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+    .affected-list li { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); background: #fbfcfb; font-size: 12px; }
+    .affected-list code { color: #32618c; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 10px; font-weight: 800; }
+    .modal-label { display: block; margin-top: 15px; font-size: 11px; font-weight: 750; }
+    .modal-input { width: 100%; height: 38px; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 0 9px; color: var(--ink); }
+    .impact { margin-top: 15px; padding: 10px 11px; border: 1px solid #e4d4a2; background: #fff8e6; color: #715300; font-size: 11px; line-height: 1.65; }
+    .impact.danger { border-color: #e6beb9; background: var(--red-soft); color: #833630; }
+    .confirm-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 15px; color: #414b51; font-size: 12px; line-height: 1.5; }
+    .confirm-check input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--blue); }
+    .split-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .split-option { min-height: 86px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; padding: 11px; text-align: left; }
+    .split-option.active { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1px rgba(23,102,166,.14); }
+    .split-option b { display: block; font-size: 12px; }
+    .split-option span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); background: #fafbf9; }
+    .toast { position: fixed; z-index: 30; left: 22px; bottom: 22px; display: none; width: min(410px, calc(100vw - 44px)); overflow: hidden; border: 1px solid #b9cdc0; border-radius: 8px; background: #fff; box-shadow: var(--shadow); }
+    .toast.show { display: block; }
+    .toast-main { display: flex; align-items: center; gap: 10px; padding: 11px 12px; }
+    .toast-mark { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: var(--green-soft); color: var(--green); font-weight: 900; }
+    .toast-copy { min-width: 0; flex: 1; }
+    .toast-copy b { display: block; font-size: 12px; }
+    .toast-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .toast-progress { height: 3px; background: var(--blue); transform-origin: left; }
+    .hidden { display: none !important; }
+    @media (max-width: 920px) {
+      .app { padding: 18px 16px 32px; }
+      .topbar { align-items: flex-start; flex-wrap: wrap; }
+      .top-meta { margin-left: 0; width: 100%; }
+      .flow-head { align-items: flex-start; flex-wrap: wrap; }
+      .flow-summary { flex-basis: 100%; order: 3; white-space: normal; }
+      .flow-head .action-group { width: 100%; margin-left: 0; }
+      .detail-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .flow-head { padding: 11px 12px; }
+      .flow-canvas { padding-left: 12px; padding-right: 12px; }
+      .edit-bar { align-items: stretch; flex-direction: column; padding: 10px 12px; }
+      .edit-bar .action-group { width: 100%; }
+      .edit-bar .button { flex: 1; padding: 0 7px; }
+      .detail-head { padding: 13px; flex-wrap: wrap; }
+      .detail-actions { width: 100%; margin-left: 0; }
+      .detail-actions .button { flex: 1; }
+      .detail-state { margin-left: auto; }
+      .tabs { gap: 16px; padding: 0 13px; overflow-x: auto; }
+      .instruction { padding: 15px 13px 18px; }
+      .split-options { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="topbar-copy">
+        <div class="eyebrow">HDMI-DRAFT-001 / 路线编辑预览</div>
+        <h1>工艺流程</h1>
+        <p>默认浏览，进入编辑后才显示结构调整操作。</p>
+      </div>
+      <div class="top-meta"><span class="draft-dot"></span><span>v1 · 草稿 · 17 个节点</span></div>
+    </header>
+
+    <section class="panel flow-panel" aria-labelledby="flow-title">
+      <div class="flow-head">
+        <h2 id="flow-title">工艺流程</h2>
+        <div class="flow-summary" id="flowSummary">点击工序查看详情；结构调整需要进入编辑工序模式。</div>
+        <div class="action-group">
+          <button class="button" id="recentDeleted" type="button" title="查看 24 小时内可恢复的删除记录">
+            <span class="button-icon" aria-hidden="true">↶</span>最近删除 <span class="recent-count" id="recentCount">1</span>
+          </button>
+          <button class="button primary" id="toggleEditing" type="button"><span class="button-icon" aria-hidden="true">✦</span>编辑工序</button>
+        </div>
+      </div>
+
+      <div class="flow-canvas" id="flowCanvas">
+        <div class="flow-track" id="flowTrack" aria-label="工艺流程"></div>
+      </div>
+      <div class="flow-scroll-hint"><span>拖动横向滚动条查看其余工序</span><div class="flow-scroll-line" aria-hidden="true"></div></div>
+
+      <div class="edit-bar" id="editBar">
+        <div class="edit-bar-copy"><b id="selectedText">尚未选择工序</b><span class="operation-state" id="operationState">可选择一道工序进行拆分，或选择两道相邻工序进行合并。</span></div>
+        <div class="action-group">
+          <button class="button" id="clearSelection" type="button">取消选择</button>
+          <button class="button primary" id="mergeButton" type="button" disabled>合并</button>
+          <button class="button danger" id="deleteButton" type="button" disabled>删除</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="detail-grid" aria-label="工序详情">
+      <article class="panel detail-panel">
+        <div class="detail-head">
+          <div>
+            <div class="detail-code" id="detailCode">HD-01</div>
+            <h2 id="detailName">路线核对</h2>
+          </div>
+          <div class="detail-state" id="detailState">人工已确认</div>
+          <div class="detail-actions" id="detailActions">
+            <button class="button" id="splitButton" type="button" title="按动作或独立工序拆分当前工序">拆分</button>
+            <button class="button danger" id="singleDeleteButton" type="button" title="删除当前工序">删除</button>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="工序详情标签">
+          <button class="tab active" type="button">作业指导</button>
+          <button class="tab" type="button">质量与异常</button>
+          <button class="tab" type="button">路线资料</button>
+        </nav>
+        <div class="instruction">
+          <h3>作业指导</h3>
+          <ol id="instructionList">
+            <li>核对当前产品型号、版本与工艺路线。</li>
+            <li>确认本次生产使用的文件为草稿待核对版本。</li>
+            <li>发现不一致内容时，登记并提交人工确认。</li>
+          </ol>
+          <div class="instruction-note">结构调整后，相关工序会标记为“待人工核对”，DOCX 流程图与指导书将在保存后同步更新。</div>
+        </div>
+      </article>
+
+      <aside class="panel media-panel">
+        <h2>图片素材</h2>
+        <p>图片仍由人工上传和确认；合并时保留已关联图片及来源记录。</p>
+        <div class="media-empty"><div><b>+</b>上传 PNG / JPEG<br>可关联到当前工序</div></div>
+      </aside>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="modalBackdrop" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <div><h2 id="modalTitle">确认操作</h2><p id="modalSubtitle"></p></div>
+        <button class="modal-close" id="modalClose" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-actions">
+        <button class="button" id="modalCancel" type="button">取消</button>
+        <button class="button primary" id="modalConfirm" type="button">确认</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <div class="toast-main"><div class="toast-mark">✓</div><div class="toast-copy"><b id="toastTitle">已删除工序</b><span id="toastText">12 秒内可撤销，最近删除保留 24 小时。</span></div><button class="button" id="undoButton" type="button">撤销</button></div>
+    <div class="toast-progress" id="toastProgress"></div>
+  </div>
+
+  <script>
+    const steps = [
+      { id: 'HD-01', name: '路线核对', state: '人工已确认', confirmed: true },
+      { id: 'HD-02', name: '外观与端子检查', state: '人工已确认', confirmed: true },
+      { id: 'HD-03', name: '裁线', state: '人工已确认', confirmed: true },
+      { id: 'HD-04', name: '外被剥除与端部定长', state: '人工已确认', confirmed: true },
+      { id: 'HD-05', name: '屏蔽层、排流线与接地准备', state: '人工已确认', confirmed: true },
+      { id: 'HD-06', name: '芯线排序、校直与剥皮', state: '人工已确认', confirmed: true },
+      { id: 'HD-07', name: '连接器端接总成', state: '人工已确认', confirmed: true },
+      { id: 'HD-08', name: '针位映射核对', state: '子步骤 · 待核对', confirmed: false, child: true }
+    ];
+
+    const detailCopy = {
+      'HD-01': ['核对当前产品型号、版本与工艺路线。', '确认本次生产使用的文件为草稿待核对版本。', '发现不一致内容时，登记并提交人工确认。'],
+      'HD-02': ['检查线材外观是否存在压伤、破损与污染。', '核对连接器端子外观，无翘曲、变形或缺件。', '异常时记录异常现象并转交人工判定。'],
+      'HD-03': ['按已确认长度裁切线材。', '确认切口平整，不得压伤芯线。', '裁切后放入标识周转盒，避免混料。'],
+      default: ['按当前工序的已确认作业指导执行。', '记录与本工序相关的异常现象。', '未确认内容不得作为正式生产依据。']
+    };
+
+    let editing = false;
+    let activeId = 'HD-01';
+    let selectedIds = new Set();
+    let lastDeletion = null;
+    let modalAction = null;
+    let splitMode = 'actions';
+    let toastTimer = null;
+    let toastFrame = null;
+
+    const byId = (id) => steps.find((step) => step.id === id);
+    const selectedSteps = () => steps.filter((step) => selectedIds.has(step.id));
+    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]);
+
+    function canMerge() {
+      const selected = selectedSteps();
+      if (selected.length !== 2 || selected.some((step) => step.child)) return false;
+      const positions = selected.map((step) => steps.indexOf(step)).sort((a, b) => a - b);
+      return positions[1] === positions[0] + 1;
+    }
+
+    function renderFlow() {
+      const track = document.getElementById('flowTrack');
+      const mergeIds = canMerge() ? selectedSteps().map((step) => step.id) : [];
+      track.innerHTML = steps.map((step, index) => {
+        const active = step.id === activeId ? ' active' : '';
+        const selected = selectedIds.has(step.id) ? ' selected' : '';
+        const child = step.child ? ' child' : '';
+        const next = steps[index + 1];
+        const showMergeLink = next && mergeIds.includes(step.id) && mergeIds.includes(next.id);
+        return `<article class="step-card${active}${selected}${child}" data-step-id="${escapeHtml(step.id)}" tabindex="0" role="button" aria-label="查看 ${escapeHtml(step.id)} ${escapeHtml(step.name)}">
+          <button class="card-select" data-select-id="${escapeHtml(step.id)}" type="button" aria-label="选择 ${escapeHtml(step.name)}"></button>
+          <span class="step-code">${String(index + 1).padStart(2, '0')} · ${escapeHtml(step.id)}</span>
+          <span class="step-name">${escapeHtml(step.name)}</span>
+          <span class="step-state">${escapeHtml(step.state)}</span>
+        </article>${next ? `<div class="flow-arrow${showMergeLink ? ' mergeable' : ''}">${showMergeLink ? '<span class="merge-link">可合并</span>' : ''}</div>` : ''}`;
+      }).join('');
+      document.getElementById('flowCanvas').classList.toggle('editing', editing);
+    }
+
+    function renderDetail() {
+      const step = byId(activeId) || steps[0];
+      if (!step) return;
+      document.getElementById('detailCode').textContent = step.id;
+      document.getElementById('detailName').textContent = step.name;
+      document.getElementById('detailState').textContent = step.state;
+      document.getElementById('detailState').style.background = step.confirmed ? 'var(--green-soft)' : 'var(--amber-soft)';
+      document.getElementById('detailState').style.color = step.confirmed ? 'var(--green)' : 'var(--amber)';
+      const instructions = detailCopy[step.id] || detailCopy.default;
+      document.getElementById('instructionList').innerHTML = instructions.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+      const actions = document.getElementById('detailActions');
+      actions.classList.toggle('hidden', !editing || step.child);
+    }
+
+    function renderEditState() {
+      document.getElementById('toggleEditing').innerHTML = editing ? '<span class="button-icon" aria-hidden="true">✓</span>完成编辑' : '<span class="button-icon" aria-hidden="true">✦</span>编辑工序';
+      document.getElementById('toggleEditing').classList.toggle('primary', !editing);
+      const selected = selectedSteps();
+      const selectedText = document.getElementById('selectedText');
+      const operationState = document.getElementById('operationState');
+      const mergeButton = document.getElementById('mergeButton');
+      const deleteButton = document.getElementById('deleteButton');
+      if (!selected.length) {
+        selectedText.textContent = '尚未选择工序';
+        operationState.textContent = '可选择一道工序进行拆分，或选择两道相邻工序进行合并。';
+        operationState.className = 'operation-state';
+      } else if (canMerge()) {
+        selectedText.textContent = `已选择 ${selected[0].id} 和 ${selected[1].id}`;
+        operationState.textContent = '两道同级相邻工序可合并。';
+        operationState.className = 'operation-state ready';
+      } else if (selected.length === 2) {
+        selectedText.textContent = `已选择 ${selected.length} 道工序`;
+        operationState.textContent = '只有两道相邻且同级的工序可以合并。';
+        operationState.className = 'operation-state warning';
+      } else {
+        selectedText.textContent = `已选择 ${selected.length} 道工序`;
+        operationState.textContent = '可删除所选工序；拆分请在单道工序详情中操作。';
+        operationState.className = 'operation-state';
+      }
+      mergeButton.disabled = !canMerge();
+      deleteButton.disabled = selected.length === 0;
+      document.getElementById('recentCount').classList.toggle('show', Boolean(lastDeletion));
+    }
+
+    function render() {
+      renderFlow();
+      renderDetail();
+      renderEditState();
+    }
+
+    function openModal({ title, subtitle, body, confirmLabel, confirmClass = 'primary', onConfirm, hideCancel = false }) {
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalSubtitle').textContent = subtitle;
+      document.getElementById('modalBody').innerHTML = body;
+      const confirm = document.getElementById('modalConfirm');
+      confirm.textContent = confirmLabel;
+      confirm.className = `button ${confirmClass}`;
+      document.getElementById('modalCancel').classList.toggle('hidden', hideCancel);
+      modalAction = onConfirm;
+      document.getElementById('modalBackdrop').classList.add('show');
+      document.getElementById('modalBackdrop').setAttribute('aria-hidden', 'false');
+      setTimeout(() => confirm.focus(), 0);
+    }
+
+    function closeModal() {
+      document.getElementById('modalBackdrop').classList.remove('show');
+      document.getElementById('modalBackdrop').setAttribute('aria-hidden', 'true');
+      modalAction = null;
+    }
+
+    function openMerge() {
+      if (!canMerge()) return;
+      const chosen = selectedSteps();
+      const body = `<ul class="affected-list">${chosen.map((step) => `<li><code>${escapeHtml(step.id)}</code><span>${escapeHtml(step.name)}</span></li>`).join('')}</ul>
+        <label class="modal-label" for="mergedName">合并后的工序名称</label>
+        <input class="modal-input" id="mergedName" value="${escapeHtml(chosen.map((step) => step.name).join(' / '))}">
+        <div class="impact">保留第一道工序编号 ${escapeHtml(chosen[0].id)}，并合并作业指导、已关联图片和来源记录。合并后状态会变为“待人工核对”，DOCX 将同步重新生成。</div>`;
+      openModal({ title: '合并工序', subtitle: '确认两道相邻同级工序后执行。', body, confirmLabel: '确认合并', onConfirm: () => {
+        const name = document.getElementById('mergedName').value.trim();
+        if (!name) return false;
+        const firstIndex = steps.indexOf(chosen[0]);
+        steps[firstIndex].name = name;
+        steps[firstIndex].state = '待人工核对';
+        steps[firstIndex].confirmed = false;
+        steps.splice(steps.indexOf(chosen[1]), 1);
+        activeId = chosen[0].id;
+        selectedIds = new Set([activeId]);
+        closeModal();
+        showToast('已合并两道工序', '当前为待人工核对状态，尚未批准或发布。', null);
+        render();
+      }});
+    }
+
+    function openDelete(ids = [...selectedIds]) {
+      const chosen = steps.filter((step) => ids.includes(step.id));
+      if (!chosen.length) return;
+      const body = `<ul class="affected-list">${chosen.map((step) => `<li><code>${escapeHtml(step.id)}</code><span>${escapeHtml(step.name)}${step.child ? '（子步骤）' : ''}</span></li>`).join('')}</ul>
+        <div class="impact danger">删除后会从流程图和对应指导书中移除这些工序；关联图片和知识记录先进入可恢复状态，不会自动批准或发布。</div>
+        <label class="confirm-check"><input id="deleteConfirmCheck" type="checkbox"><span>我确认这是需要删除的工序，并了解可在 12 秒内撤销。</span></label>`;
+      openModal({ title: `删除 ${chosen.length} 道工序`, subtitle: '删除前请确认影响范围。', body, confirmLabel: '确认删除', confirmClass: 'danger', onConfirm: () => {
+        if (!document.getElementById('deleteConfirmCheck').checked) return false;
+        const records = chosen.map((step) => ({ step: { ...step }, index: steps.indexOf(step) }));
+        records.sort((a, b) => b.index - a.index).forEach((record) => steps.splice(record.index, 1));
+        lastDeletion = { records, title: chosen.map((step) => step.id).join('、') };
+        selectedIds.clear();
+        activeId = steps[0]?.id || '';
+        closeModal();
+        showToast('已删除工序', `${lastDeletion.title} 可在 12 秒内撤销；最近删除保留 24 小时。`, undoLastDeletion);
+        render();
+      }});
+    }
+
+    function undoLastDeletion() {
+      if (!lastDeletion) return;
+      [...lastDeletion.records].sort((a, b) => a.index - b.index).forEach((record) => steps.splice(record.index, 0, record.step));
+      activeId = lastDeletion.records[0].step.id;
+      selectedIds = new Set([activeId]);
+      lastDeletion = null;
+      hideToast();
+      render();
+    }
+
+    function openSplit() {
+      const step = byId(activeId);
+      if (!step || step.child) return;
+      const body = `<div class="split-options"><button class="split-option active" data-split-mode="actions" type="button"><b>拆分为作业动作</b><span>仍是一道工序，不增加流程节点和指导书页数。</span></button><button class="split-option" data-split-mode="steps" type="button"><b>拆分为独立工序</b><span>新增子工序，流程图与指导书同步增加。</span></button></div><div class="impact">所有拆分结果均为待人工核对；当前预览只展示操作效果，不会写入正式路线。</div>`;
+      splitMode = 'actions';
+      openModal({ title: `拆分 ${step.id}`, subtitle: '选择拆分范围后再确认。', body, confirmLabel: '确认拆分', onConfirm: () => {
+        if (splitMode === 'steps') {
+          const index = steps.indexOf(step);
+          const child = { id: `${step.id}-A`, name: `${step.name} - 子步骤`, state: '子步骤 · 待核对', confirmed: false, child: true };
+          steps.splice(index + 1, 0, child);
+          activeId = child.id;
+        }
+        step.state = '待人工核对';
+        step.confirmed = false;
+        closeModal();
+        showToast('已创建拆分草稿', '拆分内容等待人工核对后才可进入正式路线。', null);
+        render();
+      }});
+      setTimeout(() => document.querySelectorAll('[data-split-mode]').forEach((button) => button.addEventListener('click', () => {
+        splitMode = button.dataset.splitMode;
+        document.querySelectorAll('[data-split-mode]').forEach((item) => item.classList.toggle('active', item === button));
+      })), 0);
+    }
+
+    function openRecentDeleted() {
+      if (!lastDeletion) {
+        openModal({ title: '最近删除', subtitle: '删除记录保留 24 小时。', body: '<div class="impact">当前没有可恢复的工序。</div>', confirmLabel: '关闭', hideCancel: true, onConfirm: closeModal });
+        return;
+      }
+      const body = `<ul class="affected-list">${lastDeletion.records.map((record) => `<li><code>${escapeHtml(record.step.id)}</code><span>${escapeHtml(record.step.name)}</span></li>`).join('')}</ul><div class="impact">这组工序仍在 24 小时恢复期内，恢复后会回到原流程位置，并保持待人工核对状态。</div>`;
+      openModal({ title: '最近删除', subtitle: '可恢复已删除的工序。', body, confirmLabel: '恢复工序', onConfirm: () => undoLastDeletion() });
+    }
+
+    function showToast(title, text, action) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastTitle').textContent = title;
+      document.getElementById('toastText').textContent = text;
+      const undo = document.getElementById('undoButton');
+      undo.classList.toggle('hidden', !action);
+      undo.onclick = action || null;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      cancelAnimationFrame(toastFrame);
+      const started = performance.now();
+      const duration = action ? 12000 : 5200;
+      const tick = (now) => {
+        document.getElementById('toastProgress').style.transform = `scaleX(${Math.max(0, 1 - (now - started) / duration)})`;
+        if (now - started < duration) toastFrame = requestAnimationFrame(tick);
+      };
+      toastFrame = requestAnimationFrame(tick);
+      toastTimer = setTimeout(hideToast, duration);
+    }
+
+    function hideToast() {
+      document.getElementById('toast').classList.remove('show');
+      clearTimeout(toastTimer);
+      cancelAnimationFrame(toastFrame);
+    }
+
+    document.getElementById('toggleEditing').addEventListener('click', () => {
+      editing = !editing;
+      selectedIds.clear();
+      render();
+    });
+    document.getElementById('clearSelection').addEventListener('click', () => { selectedIds.clear(); render(); });
+    document.getElementById('mergeButton').addEventListener('click', openMerge);
+    document.getElementById('deleteButton').addEventListener('click', () => openDelete());
+    document.getElementById('singleDeleteButton').addEventListener('click', () => openDelete([activeId]));
+    document.getElementById('splitButton').addEventListener('click', openSplit);
+    document.getElementById('recentDeleted').addEventListener('click', openRecentDeleted);
+    document.getElementById('flowTrack').addEventListener('click', (event) => {
+      const selectButton = event.target.closest('[data-select-id]');
+      if (selectButton) {
+        const id = selectButton.dataset.selectId;
+        activeId = id;
+        selectedIds.has(id) ? selectedIds.delete(id) : selectedIds.add(id);
+        render();
+        return;
+      }
+      const card = event.target.closest('[data-step-id]');
+      if (card) {
+        activeId = card.dataset.stepId;
+        render();
+      }
+    });
+    document.getElementById('flowTrack').addEventListener('keydown', (event) => {
+      if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-step-id]')) {
+        event.preventDefault();
+        activeId = event.target.dataset.stepId;
+        render();
+      }
+    });
+    document.getElementById('modalClose').addEventListener('click', closeModal);
+    document.getElementById('modalCancel').addEventListener('click', closeModal);
+    document.getElementById('modalConfirm').addEventListener('click', () => { if (modalAction) modalAction(); });
+    document.getElementById('modalBackdrop').addEventListener('click', (event) => { if (event.target === event.currentTarget) closeModal(); });
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal(); });
+    if (new URLSearchParams(window.location.search).get('demo') === 'merge') {
+      editing = true;
+      activeId = 'HD-02';
+      selectedIds = new Set(['HD-02', 'HD-03']);
+    }
+    render();
+  </script>
+</body>
+</html>

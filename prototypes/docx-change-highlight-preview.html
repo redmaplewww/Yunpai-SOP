@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SOP DOCX 修改定位预览</title>
+  <style>
+    :root{
+      --paper:#fff;
+      --surface:#f8f7f4;
+      --canvas:#74777c;
+      --ink:#202124;
+      --muted:#6a6e73;
+      --line:#d8d5cf;
+      --blue:#2459c4;
+      --blue-soft:#edf3ff;
+      --green:#2f7549;
+      --green-soft:#e8f5ec;
+      --amber:#9b6700;
+      --amber-soft:#fff3c4;
+      --highlight:rgba(255,211,68,.52);
+      --highlight-line:#b97600;
+      --shadow:0 12px 34px rgba(24,28,32,.18);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;overflow:hidden}
+    body{background:#e9e7e2;color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+    button{font:inherit}
+    button:focus-visible{outline:3px solid rgba(36,89,196,.22);outline-offset:2px}
+    .topbar{height:64px;display:flex;align-items:center;gap:14px;padding:0 18px;background:#faf9f6;border-bottom:1px solid var(--line)}
+    .brand{display:flex;align-items:center;gap:10px;min-width:215px}
+    .mark{width:34px;height:34px;display:grid;place-items:center;border-radius:7px;background:var(--blue);color:#fff;font-family:Georgia,serif;font-weight:800}
+    .brand b{display:block;font-size:15px}.brand small{display:block;margin-top:2px;color:var(--muted);font-size:11px}
+    .route{height:36px;display:flex;align-items:center;padding:0 11px;border:1px solid var(--line);border-radius:8px;background:#fff;font-size:12px;white-space:nowrap}
+    .route-state{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;white-space:nowrap}
+    .state-dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+    .spacer{flex:1}
+    .mode-control{display:flex;align-items:center;padding:3px;border:1px solid var(--line);border-radius:8px;background:#fff}
+    .mode-control span{padding:0 8px;color:var(--muted);font-size:11px}
+    .mode-button{height:28px;border:0;border-radius:6px;background:transparent;color:#555;padding:0 9px;font-size:11px;cursor:pointer}
+    .mode-button:hover{background:#f2f2f0}.mode-button.active{background:var(--blue-soft);color:#244d9b;font-weight:700}
+    .workspace{height:calc(100vh - 64px);display:grid;grid-template-columns:minmax(620px,1fr) 430px;gap:1px;background:var(--line)}
+    .preview{position:relative;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--canvas)}
+    .pane-head{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 15px;background:#f6f5f2;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+    .pane-head strong{color:var(--ink);font-size:13px}.page-number{margin-left:auto}
+    .preview-scroll{flex:1;min-height:0;overflow:auto;padding:24px;scroll-behavior:smooth;overscroll-behavior:contain;scrollbar-gutter:stable}
+    .document-stack{display:flex;flex-direction:column;align-items:center;gap:26px;min-height:100%}
+    .page-wrap{position:relative;width:min(100%,1120px);aspect-ratio:1404/993;flex:none;background:#fff;box-shadow:var(--shadow);line-height:0}
+    .page-wrap.portrait{width:min(72%,760px);aspect-ratio:993/1404}
+    .page-wrap img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+    .page-chip{position:absolute;z-index:3;top:10px;left:10px;display:flex;align-items:center;min-height:25px;padding:0 7px;border:1px solid rgba(25,31,38,.16);border-radius:5px;background:rgba(255,255,255,.9);color:#454a50;font-size:10px;line-height:1;box-shadow:0 2px 8px rgba(0,0,0,.08);backdrop-filter:blur(5px)}
+    .highlight-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+    .highlight-box{position:absolute;border:2px solid var(--highlight-line);border-radius:3px;background:var(--highlight);box-shadow:0 0 0 2px rgba(255,255,255,.72),0 3px 10px rgba(117,77,0,.22);mix-blend-mode:multiply}
+    .highlight-box.field{border-style:dashed;border-width:2px;background:rgba(255,224,102,.2);mix-blend-mode:normal}
+    .highlight-label{position:absolute;z-index:2;left:-2px;bottom:calc(100% + 5px);height:23px;display:flex;align-items:center;padding:0 7px;border-radius:5px;background:#835800;color:#fff;font-size:10px;font-weight:700;line-height:1;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.18)}
+    .highlight-layer.pulse .highlight-box{animation:locatePulse .75s ease-in-out 2}
+    @keyframes locatePulse{0%,100%{filter:none;transform:scale(1)}50%{filter:saturate(1.45);transform:scale(1.018);box-shadow:0 0 0 7px rgba(255,211,68,.25),0 4px 14px rgba(117,77,0,.26)}}
+    .locate-status{position:absolute;z-index:6;top:58px;right:18px;min-height:34px;display:flex;align-items:center;gap:8px;padding:0 11px;border:1px solid #d7b45d;border-radius:7px;background:#fff9df;color:#735100;font-size:11px;box-shadow:0 5px 16px rgba(0,0,0,.12);opacity:0;transform:translateY(-5px);transition:.18s ease;pointer-events:none}
+    .locate-status.show{opacity:1;transform:translateY(0)}
+    .locate-status b{font-size:12px}
+    .return-location{position:absolute;z-index:6;left:18px;bottom:16px;min-height:38px;display:flex;align-items:center;gap:7px;border:1px solid #c6cbd2;border-radius:7px;background:rgba(255,255,255,.96);color:#35404d;padding:0 11px;font-size:11px;font-weight:700;box-shadow:0 6px 18px rgba(24,28,32,.18);cursor:pointer;opacity:0;transform:translateY(8px);pointer-events:none;transition:.18s ease}
+    .return-location.show{opacity:1;transform:translateY(0);pointer-events:auto}.return-location:hover{border-color:var(--blue);color:var(--blue)}
+    .chat{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--surface)}
+    .chat-head{height:72px;flex:none;padding:14px 16px;background:#fff;border-bottom:1px solid var(--line)}
+    .chat-head h1{margin:0 0 4px;font-size:16px}.chat-head p{margin:0;color:var(--muted);font-size:12px}
+    .messages{flex:1;min-height:0;overflow:auto;padding:18px 15px 28px}
+    .user-message{display:flex;justify-content:flex-end;margin-bottom:14px}
+    .user-bubble{max-width:91%;padding:10px 12px;border-radius:12px 12px 3px 12px;background:#dfe9ff;font-size:13px;line-height:1.65;text-wrap:pretty}
+    .assistant-card{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:#fff;box-shadow:0 2px 8px rgba(30,35,40,.04)}
+    .assistant-main{padding:13px;font-size:13px;line-height:1.65}
+    .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.badge{padding:3px 7px;border-radius:12px;background:#eee;color:#555;font-size:10px}.badge.ai{background:var(--blue-soft);color:#244d9b}.badge.docx{background:var(--green-soft);color:var(--green)}.badge.review{background:var(--amber-soft);color:#795b08}
+    .change-list{border-top:1px solid #eceae5}
+    .change-head{display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid #efede8;color:#555;font-size:11px;font-weight:700}
+    .change-count{margin-left:auto;color:var(--muted);font-weight:400}
+    .change-row{padding:12px 13px;border-bottom:1px solid #efede8}.change-row:last-child{border-bottom:0}
+    .change-top{display:flex;align-items:flex-start;gap:10px}.change-copy{min-width:0;flex:1}.change-target{display:block;font-size:12px;font-weight:750}.change-field{display:block;margin-top:2px;color:var(--muted);font-size:10px}
+    .change-value{margin:8px 0 10px;padding:8px 9px;border-radius:7px;background:#f5f6f8;font-size:12px;line-height:1.55;overflow-wrap:anywhere;text-wrap:pretty}
+    .change-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.location{margin-right:auto;color:var(--muted);font-size:10px}
+    .locate-button,.replay-button{min-height:36px;border-radius:7px;padding:0 10px;font-size:11px;font-weight:700;cursor:pointer}
+    .locate-button{border:0;background:var(--blue);color:#fff}.locate-button:hover{background:#1748ae}.locate-button.active{background:#173c84}.locate-button:disabled{background:#7e91bb;cursor:wait}
+    .replay-button{border:1px solid #c7cbd1;background:#fff;color:#3e4650}.replay-button:hover{border-color:var(--blue);color:var(--blue)}
+    .composer{flex:none;padding:12px;border-top:1px solid var(--line);background:#fff}.compose-shell{display:flex;align-items:center;gap:9px;min-height:46px;padding:6px 7px 6px 11px;border:1px solid #c2c7cf;border-radius:10px;color:var(--muted);font-size:11px}.compose-shell span{flex:1}.send-preview{height:34px;border:0;border-radius:7px;background:#9ca2ab;color:#fff;padding:0 11px;font-size:11px;font-weight:700}
+    @media(max-width:980px){html,body{height:auto;overflow:auto}.topbar{position:sticky;top:0;z-index:10;height:auto;min-height:64px;flex-wrap:wrap;padding:9px 12px}.route-state{display:none}.mode-control{order:3;width:100%;justify-content:center}.workspace{height:auto;min-height:calc(100vh - 64px);grid-template-columns:1fr}.preview{height:58vh}.chat{min-height:70vh}.preview-scroll{padding:14px}.document-stack{gap:16px}}
+    @media(max-width:560px){.brand{min-width:0;flex:1}.route{display:none}.mode-control span{display:none}.mode-button{flex:1;min-height:36px}.preview{height:52vh}.chat-head{height:auto}.messages{padding:13px 10px 22px}.locate-status{left:9px;right:9px;top:54px}.return-location{left:9px;bottom:9px;min-height:44px}.page-wrap.portrait{width:72%}.page-chip{top:6px;left:6px}.change-actions{align-items:stretch}.location{width:100%}.locate-button,.replay-button{min-height:44px;flex:1}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition:none!important}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="mark">W</div><div><b>SOP DOCX 校样台</b><small>修改定位 · 交互预览</small></div></div>
+    <div class="route">HDMI-DRAFT-001 · HDMI 成品线</div>
+    <div class="route-state"><i class="state-dot"></i><span>draft · v1 · 17 道工序</span></div>
+    <div class="spacer"></div>
+    <div class="mode-control" role="group" aria-label="高亮定位方式">
+      <span>高亮方式</span>
+      <button class="mode-button active" data-mode="exact" type="button">精确文字</button>
+      <button class="mode-button" data-mode="keyword" type="button">关键词组合</button>
+      <button class="mode-button" data-mode="field" type="button">字段区域</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="preview" aria-label="DOCX连续页面预览">
+      <div class="pane-head"><strong>DOCX 实时预览</strong><span>HDMI-DRAFT-001 · v1</span><span id="pageNumber" class="page-number">第 1 / 18 页</span></div>
+      <div id="previewScroll" class="preview-scroll">
+        <div id="documentStack" class="document-stack"></div>
+      </div>
+      <div id="locateStatus" class="locate-status" role="status"><b>已定位</b><span id="statusText">第12页 · 记录要求</span></div>
+      <button id="returnLocation" class="return-location" type="button" aria-label="返回定位前浏览位置"><span aria-hidden="true">←</span><span id="returnLabel">返回第1页</span></button>
+    </section>
+
+    <aside class="chat" aria-label="自然语言修改结果">
+      <div class="chat-head"><h1>直接告诉 AI 哪里要改</h1><p>修改后可直接定位到 DOCX 中的实际写入位置。</p></div>
+      <div class="messages">
+        <div class="user-message"><div class="user-bubble">把“连接器壳体装配或成型”工序的记录要求补充为：设备参数记录。</div></div>
+        <article class="assistant-card">
+          <div class="assistant-main">
+            已定位到第11道“连接器壳体装配或成型”，内容已经写入待核对草稿。
+            <div class="meta"><span class="badge ai">AI 已理解</span><span class="badge docx">DOCX 已重新生成</span><span class="badge review">待人工核对</span></div>
+          </div>
+          <div class="change-list">
+            <div class="change-head">本次实际写入 <span class="change-count">1 项</span></div>
+            <section class="change-row" data-change="page12Record">
+              <div class="change-top"><div class="change-copy"><span class="change-target">第11道：连接器壳体装配或成型</span><span class="change-field">记录要求</span></div></div>
+              <div class="change-value">设备参数记录</div>
+              <div class="change-actions"><span class="location">DOCX 第12页 · 记录要求</span><button class="locate-button" data-target="page12Record" type="button">定位并高亮</button><button class="replay-button" data-target="page12Record" type="button">重播高亮</button></div>
+            </section>
+          </div>
+        </article>
+      </div>
+      <div class="composer"><div class="compose-shell"><span>例如：刚才修改的内容在第几页？</span><button class="send-preview" type="button" disabled>发送</button></div></div>
+    </aside>
+  </main>
+
+  <script>
+    const targetMap={
+      page12Record:{page:12,label:'第12页 · 记录要求',exact:[{x:78.55,y:52.2,w:7.65,h:2.45}],keyword:[{x:78.55,y:52.2,w:3.0,h:2.45},{x:81.8,y:52.2,w:4.4,h:2.45}],field:[{x:77.85,y:48.75,w:20.0,h:8.35}]}
+    };
+    const previewBase='../outputs/deliverables/hdmi_process_knowledge_sop_20260812/knowledge/generated_documents/route_1/preview';
+    const totalPages=18;
+    let activeMode='exact',activeTarget='page12Record',currentPage=1,statusTimer=null,scrollFrame=null,returnState=null;
+    const stack=document.getElementById('documentStack'),status=document.getElementById('locateStatus'),statusText=document.getElementById('statusText'),preview=document.getElementById('previewScroll'),previewSection=preview.closest('.preview'),topbar=document.querySelector('.topbar'),pageNumber=document.getElementById('pageNumber'),returnButton=document.getElementById('returnLocation'),returnLabel=document.getElementById('returnLabel');
+
+    stack.innerHTML=Array.from({length:totalPages},(_,index)=>{
+      const page=index+1,pageFile=String(page).padStart(3,'0');
+      return `<article class="page-wrap ${page===1?'portrait':''}" data-page-number="${page}" aria-label="DOCX 第${page}页">
+        <img src="${previewBase}/page-${pageFile}.png" alt="HDMI SOP 第${page}页" ${page>2?'loading="lazy"':''}>
+        <span class="page-chip">第 ${page} 页</span>
+        <div class="highlight-layer" aria-hidden="true"></div>
+      </article>`;
+    }).join('');
+
+    function getPage(page){return stack.querySelector(`[data-page-number="${page}"]`)}
+    function setCurrentPage(page){
+      currentPage=page;
+      pageNumber.textContent=`第 ${page} / ${totalPages} 页`;
+    }
+
+    function updateCurrentPage(){
+      const previewRect=preview.getBoundingClientRect(),viewCenter=previewRect.top+preview.clientHeight/2;
+      let nearest=1,nearestDistance=Infinity;
+      stack.querySelectorAll('.page-wrap').forEach(page=>{
+        const rect=page.getBoundingClientRect(),distance=Math.abs(rect.top+rect.height/2-viewCenter);
+        if(distance<nearestDistance){nearestDistance=distance;nearest=Number(page.dataset.pageNumber)}
+      });
+      setCurrentPage(nearest);
+    }
+
+    function waitForPageImage(page){
+      const image=getPage(page).querySelector('img');
+      if(image.complete&&image.naturalWidth>0)return Promise.resolve();
+      return new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error(`第${page}页加载超时`)),8000);
+        image.addEventListener('load',()=>{clearTimeout(timer);resolve()},{once:true});
+        image.addEventListener('error',()=>{clearTimeout(timer);reject(new Error(`第${page}页加载失败`))},{once:true});
+      });
+    }
+
+    function scrollPreviewTo(top,behavior='smooth'){
+      const reducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      preview.scrollTo({top,behavior:reducedMotion?'auto':behavior});
+      if(reducedMotion||behavior==='auto')return Promise.resolve();
+      return new Promise(resolve=>{
+        const started=performance.now();
+        function check(){
+          if(Math.abs(preview.scrollTop-top)<3||performance.now()-started>1800){resolve();return}
+          requestAnimationFrame(check);
+        }
+        requestAnimationFrame(check);
+      });
+    }
+
+    function targetScrollTop(page,rect){
+      const pageElement=getPage(page),pageRect=pageElement.getBoundingClientRect(),previewRect=preview.getBoundingClientRect();
+      const pageTop=preview.scrollTop+pageRect.top-previewRect.top;
+      const targetCenter=pageElement.clientHeight*((rect.y+rect.h/2)/100);
+      return Math.max(0,Math.min(preview.scrollHeight-preview.clientHeight,pageTop+targetCenter-preview.clientHeight/2));
+    }
+
+    function revealPreviewPane(){
+      if(!window.matchMedia('(max-width: 980px)').matches)return;
+      const top=Math.max(0,previewSection.offsetTop-topbar.offsetHeight);
+      window.scrollTo({top,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+    }
+
+    function drawHighlight(target,replay=true){
+      activeTarget=target;
+      const config=targetMap[target],page=getPage(config.page),layer=page.querySelector('.highlight-layer'),rects=config[activeMode];
+      stack.querySelectorAll('.highlight-layer').forEach(item=>{if(item!==layer){item.innerHTML='';item.classList.remove('pulse')}});
+      layer.innerHTML=rects.map((rect,index)=>`<div class="highlight-box ${activeMode==='field'?'field':''}" style="left:${rect.x}%;top:${rect.y}%;width:${rect.w}%;height:${rect.h}%">${index===0?`<span class="highlight-label">${activeMode==='field'?'字段区域':'本次修改'}</span>`:''}</div>`).join('');
+      document.querySelectorAll('.locate-button').forEach(button=>button.classList.toggle('active',button.dataset.target===target));
+      statusText.textContent=`${config.label} · ${activeMode==='exact'?'精确文字':activeMode==='keyword'?'关键词组合':'字段区域'}`;
+      status.classList.add('show');
+      clearTimeout(statusTimer);statusTimer=setTimeout(()=>status.classList.remove('show'),3200);
+      if(replay){layer.classList.remove('pulse');void layer.offsetWidth;layer.classList.add('pulse')}
+    }
+
+    async function locate(target){
+      const config=targetMap[target],button=document.querySelector(`.locate-button[data-target="${target}"]`),originalLabel=button.textContent;
+      if(currentPage!==config.page){
+        returnState={page:currentPage,scrollTop:preview.scrollTop};
+        returnLabel.textContent=`返回第${currentPage}页`;
+      }
+      button.disabled=true;button.textContent='定位中…';
+      try{
+        revealPreviewPane();
+        const desired=targetScrollTop(config.page,config[activeMode][0]);
+        await scrollPreviewTo(desired);
+        await waitForPageImage(config.page);
+        setCurrentPage(config.page);
+        drawHighlight(target,true);
+        if(returnState)returnButton.classList.add('show');
+      }catch(error){
+        statusText.textContent=error.message;
+        status.classList.add('show');
+      }finally{
+        button.disabled=false;button.textContent=originalLabel;
+      }
+    }
+
+    document.querySelectorAll('.mode-button').forEach(button=>button.addEventListener('click',()=>{
+      activeMode=button.dataset.mode;
+      document.querySelectorAll('.mode-button').forEach(item=>item.classList.toggle('active',item===button));
+      drawHighlight(activeTarget,true);
+    }));
+    document.querySelectorAll('.locate-button').forEach(button=>button.addEventListener('click',()=>locate(button.dataset.target)));
+    document.querySelectorAll('.replay-button').forEach(button=>button.addEventListener('click',()=>{
+      const target=button.dataset.target;
+      if(currentPage!==targetMap[target].page)locate(target);else drawHighlight(target,true);
+    }));
+    returnButton.addEventListener('click',async()=>{
+      if(!returnState)return;
+      const destination=returnState;
+      returnState=null;returnButton.classList.remove('show');
+      revealPreviewPane();
+      await scrollPreviewTo(destination.scrollTop);
+      setCurrentPage(destination.page);
+      document.querySelectorAll('.locate-button').forEach(button=>button.classList.remove('active'));
+    });
+    preview.addEventListener('scroll',()=>{
+      if(scrollFrame)return;
+      scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;updateCurrentPage()});
+    },{passive:true});
+    window.addEventListener('load',()=>{preview.scrollTo({top:0,behavior:'auto'});setCurrentPage(1)});
+  </script>
+</body>
+</html>

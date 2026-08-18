@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -350,6 +351,120 @@ class SopConversationalDocxTests(unittest.TestCase):
 
         self.assertEqual(old_pdf.read_bytes(), b"existing-pdf")
         self.assertEqual(old_page.read_bytes(), b"existing-page")
+
+    def test_preview_publish_uses_versioned_directory_when_current_dir_is_locked(self) -> None:
+        documents = SopDocumentService(self.store)
+        route_dir = documents.root / f"route_{self.route_id}"
+        current_preview = route_dir / CURRENT_PREVIEW_DIR_NAME
+        candidate_preview = route_dir / "candidate-preview"
+        current_preview.mkdir(parents=True)
+        candidate_preview.mkdir()
+        (current_preview / "old.pdf").write_bytes(b"old-preview")
+        (candidate_preview / "new.pdf").write_bytes(b"new-preview")
+
+        actual_replace = os.replace
+
+        def replace_with_locked_current(source, target):
+            if Path(source) == current_preview:
+                raise PermissionError(13, "Access denied", str(source), str(target))
+            return actual_replace(source, target)
+
+        with patch("cad_ai.sop_knowledge.documents.os.replace", side_effect=replace_with_locked_current):
+            published_preview = documents._publish_preview_directory(candidate_preview, current_preview)
+
+        self.assertTrue(published_preview.name.startswith("preview-version-"))
+        self.assertTrue((published_preview / "new.pdf").is_file())
+        self.assertTrue((current_preview / "old.pdf").is_file())
+
+    def test_latest_accepts_versioned_preview_directory(self) -> None:
+        documents = SopDocumentService(self.store)
+        route_dir = documents.root / f"route_{self.route_id}"
+        versioned_preview = route_dir / "preview-version-live"
+        route_dir.mkdir(parents=True)
+        versioned_preview.mkdir()
+        docx_path = route_dir / "current.docx"
+        pdf_path = versioned_preview / "current.pdf"
+        page_path = versioned_preview / "page-001.png"
+        docx_path.write_bytes(b"current-docx")
+        pdf_path.write_bytes(b"current-pdf")
+        page_path.write_bytes(b"current-page")
+        manifest = {
+            "route_id": self.route_id,
+            "route_version": 1,
+            "product_code": "CHAT-TEST",
+            "generated_at": "2026-08-12T00:00:00+00:00",
+            "version_token": "versioned-preview",
+            "route_fingerprint": documents._route_fingerprint(self.route_id),
+            "template_id": MULTI_PAGE_TEMPLATE_ID,
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_path": str(docx_path),
+            "pdf_path": str(pdf_path),
+            "page_paths": [str(page_path)],
+            "page_count": 1,
+            "expected_page_count": 1,
+            "validation_path": "",
+            "media_count": 0,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+        }
+        (route_dir / "document_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        with patch.object(documents, "generate") as generate:
+            result = documents.latest(self.route_id)
+
+        generate.assert_not_called()
+        self.assertEqual(result["version_token"], "versioned-preview")
+
+    def test_preview_file_checks_treat_permission_errors_as_unreadable(self) -> None:
+        documents = SopDocumentService(self.store)
+        locked = documents.root / "locked-preview.pdf"
+
+        with patch.object(Path, "is_file", side_effect=PermissionError(13, "Access denied", str(locked))):
+            self.assertFalse(documents._is_readable_file(locked))
+            self.assertFalse(documents._is_existing_file(locked))
+
+    def test_latest_regenerates_instead_of_repairing_an_unreadable_pdf(self) -> None:
+        documents = SopDocumentService(self.store)
+        route_dir = documents.root / f"route_{self.route_id}"
+        preview_dir = route_dir / "preview-version-locked"
+        route_dir.mkdir(parents=True)
+        preview_dir.mkdir()
+        docx_path = route_dir / "current.docx"
+        pdf_path = preview_dir / "current.pdf"
+        docx_path.write_bytes(b"current-docx")
+        pdf_path.write_bytes(b"locked-pdf")
+        manifest = {
+            "route_id": self.route_id,
+            "route_version": 1,
+            "product_code": "CHAT-TEST",
+            "generated_at": "2026-08-12T00:00:00+00:00",
+            "version_token": "locked-preview",
+            "route_fingerprint": documents._route_fingerprint(self.route_id),
+            "template_id": MULTI_PAGE_TEMPLATE_ID,
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_path": str(docx_path),
+            "pdf_path": str(pdf_path),
+            "page_paths": [str(preview_dir / "page-001.png")],
+            "page_count": 1,
+            "expected_page_count": 1,
+            "validation_path": "",
+            "media_count": 0,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+        }
+        (route_dir / "document_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        with (
+            patch.object(documents, "_is_readable_file", side_effect=lambda path: Path(path) != pdf_path),
+            patch.object(documents, "_is_existing_file", return_value=False),
+            patch.object(documents, "_render_pdf_pages") as render_pages,
+            patch.object(documents, "generate", return_value={"status": "regenerated"}) as generate,
+        ):
+            result = documents.latest(self.route_id)
+
+        self.assertEqual(result["status"], "regenerated")
+        generate.assert_called_once_with(self.route_id)
+        render_pages.assert_not_called()
 
     def test_latest_returns_persisted_preview_failure_without_retrying(self) -> None:
         documents = SopDocumentService(self.store)

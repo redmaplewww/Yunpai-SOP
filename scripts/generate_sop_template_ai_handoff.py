@@ -28,10 +28,16 @@ from cad_ai.sop_visual_template import (
     _render_center_flowchart_shape_image,
     _render_process_flow_word_table,
     _render_work_instruction_word_table,
+    _normalize_work_image_slots,
     _set_document_defaults,
     _set_row_height,
     _set_word_cell,
     _set_word_cell_margins,
+    _work_image_body_row_heights,
+    _work_image_caption_line_count,
+    _work_image_font_sizes,
+    _work_image_layout,
+    _work_image_order_label,
     _write_word_format_check_json,
     build_process_flow_page,
     build_usb_cable_packaging_demo,
@@ -41,7 +47,7 @@ from cad_ai.sop_visual_template import (
 
 TEMPLATE_ID = "yunpai.sop.usb_c_cable_packaging.two_page.v1"
 FINAL_DOCX_NAME = "SOP完整模板_USB-C数据线包装_草案.docx"
-HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
+HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v4"
 HDMI_FINAL_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 CENTER_FLOWCHART_NAME = "center_flowchart.png"
 MANIFEST_NAME = "sop_template_manifest.json"
@@ -178,7 +184,7 @@ def generate_route_package(
     document = _build_multi_page_document(flow_page, work_pages)
     _apply_multi_page_delivery_controls(
         document,
-        instruction_page_count=len(work_pages),
+        work_pages=work_pages,
         normalized_date=normalized_date,
         display_date=display_date,
     )
@@ -189,7 +195,17 @@ def generate_route_package(
         document_path,
         expected_date=display_date,
         expected_instruction_pages=len(work_pages),
+        expected_instruction_slots=[page["work_image_slots"] for page in work_pages],
     )
+    instruction_layouts = [
+        {
+            "step_id": step["id"],
+            "step_code": step["step_code"],
+            "work_image_slots": page["work_image_slots"],
+            "visual_order": _work_image_order_label(page["work_image_slots"]),
+        }
+        for step, page in zip(route["steps"], work_pages)
+    ]
     validation_path = output / VALIDATION_NAME
     validation_path.write_text(json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -201,7 +217,8 @@ def generate_route_package(
         "expected_rendered_pages": 1 + len(work_pages),
         "tables_per_flow_page": 4,
         "tables_per_instruction_page": 4,
-        "visual_step_order_each_instruction_page": "1,2,3 / 6,5,4",
+        "work_image_layout": "per_step_1_to_6",
+        "instruction_layouts": instruction_layouts,
         "images": "embed_confirmed_step_media_and_leave_unbound_slots_blank",
         "status": "demo_not_for_release",
     }
@@ -209,7 +226,7 @@ def generate_route_package(
     format_check_path.write_text(json.dumps(format_check, ensure_ascii=False, indent=2), encoding="utf-8")
 
     manifest = {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "template_id": HDMI_TEMPLATE_ID,
         "status": "demo_not_for_release",
         "document_date": normalized_date,
@@ -219,7 +236,8 @@ def generate_route_package(
             "following_pages": "repeated A4 landscape standard work instruction",
             "work_instruction_pages": len(work_pages),
             "expected_rendered_pages": 1 + len(work_pages),
-            "step_order_each_page": "1,2,3 / 6,5,4",
+            "work_image_layout": "per_step_1_to_6",
+            "instruction_layouts": instruction_layouts,
         },
         "route": {
             "route_id": route_id,
@@ -352,7 +370,7 @@ def _apply_delivery_controls(document: Any, *, normalized_date: str, display_dat
     _set_word_cell(tables[4].cell(1, 7), display_date)
     _set_word_cell(tables[4].cell(2, 3), "DRAFT")
     _set_word_cell(
-        tables[5].cell(4, 4),
+        tables[5].cell(4, 7),
         f"变更内容\nA / 初版模板 / {normalized_date} / M2",
         size=7,
         align=0,
@@ -366,7 +384,7 @@ def _apply_delivery_controls(document: Any, *, normalized_date: str, display_dat
     _set_row_height(tables[7].rows[1], 420)
 
     for row_index in range(6):
-        side_cell = tables[5].cell(row_index, 4)
+        side_cell = tables[5].cell(row_index, 7)
         _set_word_cell_margins(side_cell, top=30, start=70, bottom=30, end=70)
         for paragraph in side_cell.paragraphs:
             for run in paragraph.runs:
@@ -571,11 +589,13 @@ def _route_template_pages(
         confirmed_media_by_step.setdefault(int(item["route_step_id"]), []).append(item)
     work_pages: list[dict[str, Any]] = []
     for page_no, step in enumerate(steps, start=1):
+        slot_count = _normalize_work_image_slots(step.get("work_image_slots") or 6)
         methods = [str(item).strip() for item in step.get("method_json", []) if str(item).strip()]
-        step_media = confirmed_media_by_step.get(int(step["id"]), [])[:6]
+        method_groups = _group_methods_for_slots(methods, slot_count)
+        step_media = confirmed_media_by_step.get(int(step["id"]), [])[:slot_count]
         slots = []
-        for slot_no in range(1, 7):
-            method = methods[slot_no - 1] if slot_no <= len(methods) else ""
+        for slot_no in range(1, slot_count + 1):
+            method = method_groups[slot_no - 1]
             slot = {
                 "slot_no": slot_no,
                 "image_placeholder": True,
@@ -599,6 +619,7 @@ def _route_template_pages(
             version="DRAFT",
             page_no=page_no,
             page_total=page_total,
+            work_image_slots=slot_count,
         )
         page["operation_order"] = (
             f"{step.get('step_code', '')} | {step.get('title', '')} | "
@@ -645,6 +666,20 @@ def _route_template_pages(
         ]
         work_pages.append(page)
     return flow_page, work_pages
+
+
+def _group_methods_for_slots(methods: list[str], slot_count: int) -> list[str]:
+    """Keep every ordered method while fitting it into the selected visual slots."""
+    count = _normalize_work_image_slots(slot_count)
+    groups = ["" for _ in range(count)]
+    if not methods:
+        return groups
+    for index, method in enumerate(methods):
+        group_index = index if len(methods) <= count else min(index * count // len(methods), count - 1)
+        prefix = f"（{index + 1}）" if len(methods) > count else ""
+        text = prefix + method
+        groups[group_index] = f"{groups[group_index]}\n{text}".strip()
+    return groups
 
 
 def _route_ie_timing_values(payload: dict[str, Any]) -> dict[str, str]:
@@ -710,10 +745,11 @@ def _build_multi_page_document(
 def _apply_multi_page_delivery_controls(
     document: Any,
     *,
-    instruction_page_count: int,
+    work_pages: list[dict[str, Any]],
     normalized_date: str,
     display_date: str,
 ) -> None:
+    instruction_page_count = len(work_pages)
     expected_tables = 4 + instruction_page_count * 4
     if len(document.sections) != 2 or len(document.tables) != expected_tables:
         raise ValueError(
@@ -728,24 +764,39 @@ def _apply_multi_page_delivery_controls(
     _set_word_cell(tables[0].cell(2, 3), "DRAFT")
     _set_word_cell(tables[0].cell(2, 5), display_date)
     for page_index in range(instruction_page_count):
+        slot_count = _normalize_work_image_slots(work_pages[page_index].get("work_image_slots") or 6)
+        font_sizes = _work_image_font_sizes(slot_count)
         base = 4 + page_index * 4
         header, body, ie_table, footer = tables[base : base + 4]
         for row, height in zip(header.rows, [520, 420, 600]):
             _set_exact_row_height(row, height)
         _set_word_cell(header.cell(1, 7), display_date)
         _set_word_cell(header.cell(2, 3), "DRAFT")
-        for row_index, height in enumerate([900, 900, 500, 900, 900, 500]):
+        caption_line_count = _work_image_caption_line_count(
+            list(work_pages[page_index].get("step_slots") or [])
+        )
+        body_row_heights = _work_image_body_row_heights(slot_count, caption_line_count)
+        previous_content_height = {1: 340, 2: 300, 3: 270, 4: 245, 5: 225, 6: 210}[slot_count]
+        content_height = {1: 520, 2: 400, 3: 320, 4: 260, 5: 235, 6: 220}[slot_count]
+        ie_row_heights = [380, 420] + [content_height] * slot_count
+        previous_ie_height = 520 + previous_content_height * slot_count
+        reclaimed_height = sum(ie_row_heights) - previous_ie_height
+        image_rows = [0, 1, 2, 3, 4] if slot_count <= 3 else [0, 1, 3, 4]
+        quotient, remainder = divmod(reclaimed_height, len(image_rows))
+        for position, row_index in enumerate(image_rows):
+            body_row_heights[row_index] -= quotient + (1 if position < remainder else 0)
+        for row_index, height in enumerate(body_row_heights):
             _set_exact_row_height(body.rows[row_index], height)
-        for row_index in range(len(ie_table.rows)):
-            _set_exact_row_height(ie_table.rows[row_index], 260 if row_index < 2 else 220)
+        for row, height in zip(ie_table.rows, ie_row_heights):
+            _set_exact_row_height(row, height)
         _set_exact_row_height(footer.rows[0], 360)
         _set_exact_row_height(footer.rows[1], 560)
         for row_index in range(6):
-            side_cell = body.cell(row_index, 4)
+            side_cell = body.cell(row_index, 7)
             _set_word_cell_margins(side_cell, top=30, start=70, bottom=30, end=70)
             for paragraph in side_cell.paragraphs:
                 for run in paragraph.runs:
-                    run.font.size = Pt(6)
+                    run.font.size = Pt(font_sizes["side"])
         _set_word_cell(footer.cell(1, 3), "材料符合RoHS/REACH；发布前确认。", size=7, align=0)
         _set_word_cell_margins(footer.cell(1, 3), top=30, start=60, bottom=30, end=60)
 
@@ -755,6 +806,7 @@ def validate_multi_page_document(
     *,
     expected_date: str,
     expected_instruction_pages: int,
+    expected_instruction_slots: list[int] | None = None,
 ) -> dict[str, Any]:
     path = Path(document_path)
     validation = _validate_docx_package(path)
@@ -765,17 +817,28 @@ def validate_multi_page_document(
     draft_headers = True
     dates_match = True
     visual_orders = True
+    ie_row_counts_match = True
+    slot_counts = expected_instruction_slots or [6] * expected_instruction_pages
+    if len(slot_counts) != expected_instruction_pages:
+        raise ValueError("instruction slot count list must match instruction page count")
     for page_index in range(expected_instruction_pages):
         base = 4 + page_index * 4
         if base + 3 >= len(tables):
-            signoffs_blank = draft_headers = dates_match = visual_orders = False
+            signoffs_blank = draft_headers = dates_match = visual_orders = ie_row_counts_match = False
             break
-        header, body, _, footer = tables[base : base + 4]
+        header, body, ie_table, footer = tables[base : base + 4]
+        slot_count = _normalize_work_image_slots(slot_counts[page_index])
         signoffs_blank = signoffs_blank and [footer.cell(1, index).text.strip() for index in range(3)] == ["", "", ""]
         draft_headers = draft_headers and header.cell(2, 3).text.strip() == "DRAFT"
         dates_match = dates_match and header.cell(1, 7).text.strip() == expected_date
-        expected = [(0, 1, "1"), (0, 2, "2"), (0, 3, "3"), (3, 1, "6"), (3, 2, "5"), (3, 3, "4")]
-        visual_orders = visual_orders and all(body.cell(row, col).text.strip().startswith(prefix) for row, col, prefix in expected)
+        expected = [
+            (item["image_row_start"], item["column_start"], str(item["slot_no"]))
+            for item in _work_image_layout(slot_count)
+        ]
+        visual_orders = visual_orders and all(
+            body.cell(row, col).text.strip().startswith(prefix) for row, col, prefix in expected
+        )
+        ie_row_counts_match = ie_row_counts_match and len(ie_table.rows) == 2 + slot_count
     checks = {
         "sections": len(document.sections) == 2,
         "top_level_tables": len(tables) == expected_tables,
@@ -786,6 +849,7 @@ def validate_multi_page_document(
         "version_is_draft_every_page": draft_headers,
         "document_date_every_page": dates_match,
         "visual_step_order_every_page": visual_orders,
+        "ie_action_rows_match_work_image_slots": ie_row_counts_match,
         "has_png_media": validation.get("has_png_media") is True,
         "has_no_svg": validation.get("has_svg") is False,
         "has_no_vml": validation.get("has_vml_shape") is False,
@@ -804,6 +868,13 @@ def validate_multi_page_document(
         "visual_qa": {
             "required": True,
             "expected_page_count": 1 + expected_instruction_pages,
+            "instruction_layouts": [
+                {
+                    "work_image_slots": count,
+                    "visual_order": _work_image_order_label(count),
+                }
+                for count in slot_counts
+            ],
             "status": "pending_external_render_and_human_or_agent_image_review",
         },
     }
@@ -837,12 +908,8 @@ def _has_visual_step_order(tables: list[Any]) -> bool:
         return False
     body = tables[5]
     expected = [
-        (0, 1, "1"),
-        (0, 2, "2"),
-        (0, 3, "3"),
-        (3, 1, "6"),
-        (3, 2, "5"),
-        (3, 3, "4"),
+        (item["image_row_start"], item["column_start"], str(item["slot_no"]))
+        for item in _work_image_layout(6)
     ]
     return all(body.cell(row, column).text.strip().startswith(prefix) for row, column, prefix in expected)
 

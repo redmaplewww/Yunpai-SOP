@@ -1,5 +1,21 @@
 # Yunpai SOP Agent 说明
 
+## Route Reference Files
+
+- The full review workbench supports PDF, DOCX, XLSX, CSV, TXT, PNG, and JPEG route references, limited to 20MB per file.
+- Route references are independent from project and step images. New files start as `needs_revision`; confirmation does not write the SOP, knowledge index, or approval state.
+- Deduplicate by route and file hash. A duplicate upload reuses the original record without changing confirmed metadata or review state.
+- Approved routes reject upload, confirmation, and deletion. Create a revision first; copied references return to `needs_revision`.
+- Natural-language project creation must create all eight route sections with blocking unknowns, so the Route References page is never blank and cannot become approved automatically.
+
+## New Project Auto Intake
+
+- The top-bar New Project entry accepts pasted project text plus PNG/JPEG work-instruction images; document parsing and OCR are out of scope.
+- Preview drafts are memory-only and expire. Invalid images, unavailable AI, blocking unknowns, and duplicate products must not create a route or document.
+- AI may suggest an uploaded image's target step and caption, but every accepted link remains `draft`; unmatched images remain unassigned assets.
+- IE timing and other production facts must be grounded in the pasted text. Never estimate them from an image or from model knowledge.
+- A successful one-click intake creates only a draft route with `needs_revision` content. It must never approve, publish, or include unconfirmed images in the official DOCX.
+
 本仓库只维护 SOP 工艺知识、人工审核、自然语言修改、DOCX 生成和预览能力。
 
 ## HDMI 模板唯一入口
@@ -40,3 +56,11 @@ python -m unittest discover -s tests -p "test_sop_*.py" -v
 - 合并只允许相邻同层级且无子工序的两道工序，并完整保留字段、媒体和来源记录；
 - 所有结构变更均标记 `needs_revision`，已批准路线必须先创建新修订版；
 - 删除后提供 12 秒即时撤销和 24 小时最近删除恢复，不得自动批准或发布恢复后的内容。
+
+## 当前工图版式规则
+
+- 每道工序的 `route_step.work_image_slots` 可独立设为 1～6，默认 6；路线编辑列表必须直接显示“几格”入口；
+- 1～3 格为单排，4 格为 `1,2 / 4,3`，5 格为 `1,2,3 / 5,4`，6 格为 `1,2,3 / 6,5,4`；
+- 作业步骤多于格数时按原顺序合并说明，不得截断；IE 动作行数必须等于格数；
+- 版式变更后工序回到 `needs_revision`并重建 DOCX/PDF/PNG；已批准路线不可直接修改；
+- 目标格数小于已确认图片数时必须拒绝，不得静默隐藏、删除或取消确认图片。

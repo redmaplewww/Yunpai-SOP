@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import http.client
+import json
+import sqlite3
 import tempfile
 import unittest
 import zipfile
@@ -9,11 +11,15 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cad_ai.sop_knowledge.nl_assistant import NaturalLanguageSopAssistant
+from cad_ai.sop_knowledge.llm_wire import request_json_object
 from cad_ai.sop_knowledge.models import RouteSectionDraft, RouteStepDraft
+from cad_ai.sop_knowledge.project_creation import NaturalLanguageProjectService
 from cad_ai.sop_knowledge.renderer import VariableRouteDocxRenderer
-from cad_ai.sop_knowledge.store import SopKnowledgeStore
+from cad_ai.sop_knowledge.store import ROUTE_SECTION_TYPES, SopKnowledgeStore
 from cad_ai.sop_knowledge.web import (
+    ProjectImageRequest,
     _confirm_media_and_regenerate,
+    _decode_project_images,
     _regenerate_document_after_route_change,
     _save_media_layout_and_regenerate,
 )
@@ -131,6 +137,464 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("面向客户的表达规则", prompt_source)
         self.assertIn("避免长段落、书面腔、学术化解释", prompt_source)
         self.assertIn("严禁出现 route_steps、JSON、step_code、字段名、数据库", prompt_source)
+
+    def test_responses_wire_uses_structured_input_reasoning_and_disabled_storage(self) -> None:
+        config = {
+            "api_key": "test-key",
+            "base_url": "https://example.test/api",
+            "model": "gpt-5.5",
+            "wire_api": "responses",
+            "reasoning_effort": "xhigh",
+            "disable_response_storage": True,
+        }
+        with patch("cad_ai.sop_knowledge.llm_wire.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(
+                {"output_text": '{"answer": "ok"}'}, ensure_ascii=False
+            ).encode("utf-8")
+            result = request_json_object(
+                system="Return JSON.", user="Describe the SOP.", config=config, timeout=12
+            )
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://example.test/api/responses")
+        self.assertEqual(payload["input"][0]["content"][0], {"type": "input_text", "text": "Return JSON."})
+        self.assertEqual(payload["input"][1]["content"][0], {"type": "input_text", "text": "Describe the SOP."})
+        self.assertEqual(payload["text"], {"format": {"type": "json_object"}})
+        self.assertEqual(payload["reasoning"], {"effort": "xhigh"})
+        self.assertFalse(payload["store"])
+        self.assertNotIn("temperature", payload)
+        self.assertEqual(result, {"answer": "ok"})
+
+    def test_responses_wire_includes_uploaded_image_with_source_metadata(self) -> None:
+        config = {
+            "api_key": "test-key",
+            "base_url": "https://example.test/api",
+            "model": "gpt-5.5",
+            "wire_api": "responses",
+        }
+        images = [{
+            "source_id": "image-01",
+            "original_name": "裁线动作.jpg",
+            "data_url": "data:image/jpeg;base64,/9j/2Q==",
+        }]
+        with patch("cad_ai.sop_knowledge.llm_wire.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b'{"output_text":"{\\"answer\\":\\"ok\\"}"}'
+            request_json_object(
+                system="Return JSON.",
+                user="Build the SOP.",
+                config=config,
+                timeout=12,
+                images=images,
+            )
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        content = payload["input"][1]["content"]
+        self.assertEqual(content[0], {"type": "input_text", "text": "Build the SOP."})
+        self.assertIn("source_id=image-01", content[1]["text"])
+        self.assertIn("original_name=裁线动作.jpg", content[1]["text"])
+        self.assertEqual(content[2], {
+            "type": "input_image",
+            "image_url": "data:image/jpeg;base64,/9j/2Q==",
+            "detail": "auto",
+        })
+
+    def test_chat_completions_wire_remains_compatible(self) -> None:
+        config = {"api_key": "test-key", "base_url": "https://example.test/v1", "model": "legacy-model"}
+        with patch("cad_ai.sop_knowledge.llm_wire.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(
+                {"choices": [{"message": {"content": '{"answer": "legacy"}'}}]}, ensure_ascii=False
+            ).encode("utf-8")
+            result = request_json_object(system="Return JSON.", user="Describe the SOP.", config=config, timeout=12)
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://example.test/v1/chat/completions")
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["temperature"], 0)
+        self.assertEqual(result, {"answer": "legacy"})
+
+    def test_chat_completions_wire_accepts_uploaded_images(self) -> None:
+        config = {"api_key": "test-key", "base_url": "https://example.test/v1", "model": "vision-model"}
+        with patch("cad_ai.sop_knowledge.llm_wire.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"answer\\":\\"ok\\"}"}}]}'
+            request_json_object(
+                system="Return JSON.",
+                user="Build the SOP.",
+                config=config,
+                timeout=12,
+                images=[{
+                    "source_id": "image-01",
+                    "original_name": "inspection.png",
+                    "data_url": "data:image/png;base64,iVBORw0KGgo=",
+                }],
+            )
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        content = payload["messages"][1]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "Build the SOP."})
+        self.assertEqual(content[2]["type"], "image_url")
+        self.assertEqual(content[2]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=")
+
+    def test_new_project_preview_refuses_to_guess_when_ai_is_unavailable(self) -> None:
+        service = NaturalLanguageProjectService(self.store, documents=Mock())
+        before = len(self.store.list_products())
+
+        with patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value=None):
+            result = service.preview("这个产品先裁线，再焊接，最后检查和包装。")
+
+        self.assertEqual(result["parser_kind"], "unavailable")
+        self.assertFalse(result["can_create"])
+        self.assertEqual(result["steps"], [])
+        self.assertIsNone(result["draft_id"])
+        self.assertEqual(len(self.store.list_products()), before)
+
+    def test_new_project_image_payload_is_bounded_and_decoded_before_preview(self) -> None:
+        decoded = _decode_project_images([ProjectImageRequest(
+            source_id="image-01",
+            original_name="来料检查.png",
+            mime_type="image/png",
+            data_base64=base64.b64encode(PNG_1X1).decode("ascii"),
+        )])
+        self.assertEqual(decoded[0]["data"], PNG_1X1)
+
+        with self.assertRaisesRegex(ValueError, "数据无效"):
+            _decode_project_images([ProjectImageRequest(
+                source_id="image-bad",
+                original_name="损坏图片.png",
+                mime_type="image/png",
+                data_base64="not-base64!",
+            )])
+
+    def test_new_project_rejects_invalid_image_before_ai_or_database_write(self) -> None:
+        service = NaturalLanguageProjectService(self.store, documents=Mock())
+        before = len(self.store.list_products())
+        with self.assertRaisesRegex(ValueError, "不是有效的 PNG"):
+            service.preview(
+                "产品是图片校验转接线，先检查来料。",
+                images=[{
+                    "source_id": "image-01",
+                    "original_name": "伪造图片.png",
+                    "mime_type": "image/png",
+                    "data": b"not-a-png",
+                }],
+            )
+        self.assertEqual(len(self.store.list_products()), before)
+
+    def test_new_project_preview_is_memory_only_and_removes_ungrounded_facts(self) -> None:
+        service = NaturalLanguageProjectService(self.store, documents=Mock())
+        raw = {
+            "intent": "create_project",
+            "assistant_message": "已整理，请核对。",
+            "product_name": "USB-C 转接线",
+            "product_code": "",
+            "route_name": "USB-C 转接线工艺路线",
+            "route_summary": "根据现场描述整理。",
+            "steps": [
+                {
+                    "title": "裁线",
+                    "action": "准备线材",
+                    "why": "进入后续加工",
+                    "method": ["按工单裁线"],
+                    "tool_equipment": ["X-100 自动裁线机"],
+                    "parameters": [{"name": "长度", "value": "100 mm"}],
+                    "quality_check": [],
+                    "acceptance_criteria": [],
+                    "record_output": [],
+                    "exception": [],
+                },
+                {
+                    "title": "包装",
+                    "action": "完成包装",
+                    "why": "保护成品",
+                    "method": ["装入包装袋"],
+                    "quality_check": [],
+                    "acceptance_criteria": [],
+                    "record_output": [],
+                    "exception": [],
+                },
+            ],
+            "unknowns": [],
+            "warnings": [],
+        }
+        before = len(self.store.list_products())
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+        ):
+            result = service.preview("这个项目是 USB-C 转接线，先裁线，最后包装。")
+
+        self.assertEqual(result["parser_kind"], "llm")
+        self.assertTrue(result["draft_id"])
+        self.assertTrue(result["can_create"])
+        self.assertEqual(result["steps"][0]["tool_equipment"], [])
+        self.assertEqual(result["steps"][0]["parameters"], [])
+        self.assertIn("待补充", " ".join(item["label"] for item in result["unknowns"]))
+        self.assertEqual(len(self.store.list_products()), before)
+
+    def test_new_project_question_never_becomes_a_creatable_route(self) -> None:
+        service = NaturalLanguageProjectService(self.store, documents=Mock())
+        raw = {
+            "intent": "question",
+            "assistant_message": "可以先说明产品和工序。",
+            "product_name": "",
+            "product_code": "",
+            "route_name": "",
+            "route_summary": "",
+            "steps": [],
+            "unknowns": [],
+            "warnings": [],
+        }
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+        ):
+            result = service.preview("我应该怎么描述一个新项目？")
+
+        self.assertEqual(result["intent"], "question")
+        self.assertFalse(result["can_create"])
+        self.assertEqual(result["steps"], [])
+
+    def test_new_project_duplicate_requires_a_user_choice(self) -> None:
+        service = NaturalLanguageProjectService(self.store, documents=Mock())
+        raw = {
+            "intent": "create_project",
+            "assistant_message": "已整理。",
+            "product_name": "测试产品",
+            "product_code": "WORKER-TEST",
+            "route_name": "测试路线",
+            "route_summary": "",
+            "steps": [{"title": "检查", "action": "检查来料", "why": "确认来料", "method": ["核对标签"]}],
+            "unknowns": [],
+            "warnings": [],
+        }
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+        ):
+            result = service.preview("产品编号 WORKER-TEST，产品是测试产品，先检查。")
+
+        self.assertFalse(result["can_create"])
+        self.assertEqual(result["duplicate_matches"][0]["latest_route_id"], self.route_id)
+
+    def test_confirm_new_project_creates_draft_route_and_regenerates_docx(self) -> None:
+        documents = Mock()
+        documents.generate.return_value = {"page_count": 3, "preview_status": "ready"}
+        service = NaturalLanguageProjectService(self.store, documents=documents)
+        raw = {
+            "intent": "create_project",
+            "assistant_message": "已整理，请核对。",
+            "product_name": "新测试转接线",
+            "product_code": "NEW-CABLE-01",
+            "route_name": "新测试转接线工艺路线",
+            "route_summary": "现场人员描述的新项目。",
+            "steps": [
+                {"title": "来料检查", "action": "检查来料", "why": "确认来料", "method": ["核对标签"]},
+                {"title": "成品包装", "action": "包装成品", "why": "保护成品", "method": ["装入包装袋"]},
+            ],
+            "unknowns": [],
+            "warnings": [],
+        }
+        description = "产品是新测试转接线，编号 NEW-CABLE-01，先来料检查，再成品包装。"
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+        ):
+            preview = service.preview(description)
+        result = service.confirm(preview["draft_id"], worker="worker-new-project")
+
+        route = self.store.get_route(result["route_id"])
+        self.assertEqual(route["route"]["status"], "draft")
+        self.assertEqual(route["route"]["approval_scope"], "none")
+        self.assertEqual([item["title"] for item in route["steps"]], ["来料检查", "成品包装"])
+        self.assertTrue(all(item["review_state"] == "needs_revision" for item in route["steps"]))
+        self.assertEqual({item["section_type"] for item in route["sections"]}, set(ROUTE_SECTION_TYPES))
+        self.assertTrue(all(item["review_state"] == "needs_revision" for item in route["sections"]))
+        self.assertEqual(result["document"]["page_count"], 1 + len(route["steps"]))
+        documents.generate.assert_called_once_with(result["route_id"])
+
+    def test_confirm_new_project_stores_images_as_draft_links_and_grounded_ie_timing(self) -> None:
+        documents = Mock()
+        documents.generate.return_value = {"page_count": 3, "preview_status": "ready"}
+        service = NaturalLanguageProjectService(self.store, documents=documents)
+        raw = {
+            "intent": "create_project",
+            "assistant_message": "已经整理并建立草稿。",
+            "product_name": "图文测试转接线",
+            "product_code": "IMAGE-INTAKE-01",
+            "route_name": "图文测试转接线工艺路线",
+            "route_summary": "",
+            "steps": [
+                {"title": "来料检查", "action": "检查来料", "why": "确认来料", "method": ["核对标签"]},
+                {"title": "裁线", "action": "完成裁线", "why": "准备线材", "method": ["按工单裁线"]},
+            ],
+            "ie_timing": [{
+                "step_title": "裁线",
+                "duration": "35 秒",
+                "source_text": "IE 工时：裁线 35 秒。",
+            }],
+            "image_assignments": [
+                {
+                    "source_id": "image-01",
+                    "target_step_title": "来料检查",
+                    "caption": "核对来料标签",
+                    "reason": "图片显示来料核对动作",
+                },
+                {
+                    "source_id": "image-02",
+                    "target_step_title": "不存在的工序",
+                    "caption": "不能写入",
+                },
+            ],
+            "unknowns": [],
+            "warnings": [],
+        }
+        images = [
+            {"source_id": "image-01", "original_name": "来料.png", "mime_type": "image/png", "data": PNG_1X1},
+            {"source_id": "image-02", "original_name": "待分配.png", "mime_type": "image/png", "data": PNG_1X1 + b"second"},
+        ]
+        description = "产品是图文测试转接线，编号 IMAGE-INTAKE-01，先来料检查，再裁线。IE 工时：裁线 35 秒。"
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+        ):
+            preview = service.preview(description, images=images)
+
+        self.assertEqual(len(preview["image_assignments"]), 1)
+        self.assertEqual(preview["unassigned_images"][0]["source_id"], "image-02")
+        self.assertEqual(preview["ie_timing"][0]["工时"], "35 秒")
+        result = service.confirm(preview["draft_id"], worker="worker-image-intake")
+
+        route = self.store.get_route(result["route_id"])
+        self.assertEqual(len(route["media_assets"]), 2)
+        self.assertEqual(len(route["media"]), 1)
+        self.assertEqual(route["media"][0]["link_state"], "draft")
+        self.assertEqual(route["media"][0]["caption"], "核对来料标签")
+        ie_section = next(item for item in route["sections"] if item["section_type"] == "ie_timing")
+        self.assertEqual(ie_section["content_json"]["工序工时"][0]["工时"], "35 秒")
+        self.assertEqual(result["image_count"], 2)
+        self.assertEqual(result["linked_image_count"], 1)
+        self.assertEqual(result["unmatched_image_count"], 1)
+        self.assertEqual(result["ie_timing_count"], 1)
+        documents.generate.assert_called_once_with(result["route_id"])
+
+    def test_route_reference_file_is_reviewable_and_isolated_from_step_images(self) -> None:
+        content = b"%PDF-1.7\nroute reference\n"
+        asset = self.store.upload_route_reference_file(
+            self.route_id,
+            original_name="受控BOM.pdf",
+            mime_type="application/pdf",
+            data=content,
+            uploaded_by="worker-reference",
+            source_note="客户提供的路线资料",
+        )
+
+        route = self.store.get_route(self.route_id)
+        self.assertEqual(len(route["reference_files"]), 1)
+        self.assertEqual(route["reference_files"][0]["id"], asset["id"])
+        self.assertEqual(route["reference_files"][0]["review_state"], "needs_revision")
+        self.assertEqual(route["media_assets"], [])
+        self.assertTrue(Path(asset["storage_path"]).is_file())
+
+        confirmed = self.store.confirm_route_reference_file(asset["id"], reviewer="worker-reference")
+        self.assertEqual(confirmed["status"], "confirmed")
+        duplicate = self.store.upload_route_reference_file(
+            self.route_id,
+            original_name="受控BOM-副本.pdf",
+            mime_type="application/pdf",
+            data=content,
+            uploaded_by="worker-reference",
+            source_note="不应覆盖已确认资料的备注",
+        )
+        self.assertEqual(duplicate["id"], asset["id"])
+        self.assertEqual(duplicate["original_name"], "受控BOM.pdf")
+        self.assertEqual(duplicate["source_note"], "客户提供的路线资料")
+        self.assertEqual(duplicate["review_state"], "confirmed")
+        self.assertEqual(len(self.store.get_route(self.route_id)["reference_files"]), 1)
+
+        deleted = self.store.delete_route_reference_file(asset["id"])
+        self.assertEqual(deleted["status"], "deleted")
+        self.assertFalse(Path(asset["storage_path"]).exists())
+
+    def test_approved_route_reference_files_are_immutable(self) -> None:
+        asset = self.store.upload_route_reference_file(
+            self.route_id,
+            original_name="approved-route-reference.pdf",
+            mime_type="application/pdf",
+            data=b"%PDF-1.7\napproved route reference\n",
+            uploaded_by="worker-reference",
+        )
+        with self.store.connect() as connection:
+            connection.execute("UPDATE product_route SET status='approved' WHERE id=?", (self.route_id,))
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.upload_route_reference_file(
+                self.route_id,
+                original_name="blocked-reference.pdf",
+                mime_type="application/pdf",
+                data=b"%PDF-1.7\nblocked\n",
+                uploaded_by="worker-reference",
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.confirm_route_reference_file(asset["id"], reviewer="worker-reference")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.delete_route_reference_file(asset["id"])
+        self.assertTrue(Path(asset["storage_path"]).is_file())
+
+    def test_confirm_new_project_accepts_short_shop_floor_actions(self) -> None:
+        documents = Mock()
+        documents.generate.return_value = {"page_count": 2, "preview_status": "ready"}
+        service = NaturalLanguageProjectService(self.store, documents=documents)
+        raw = {
+            "intent": "create_project",
+            "assistant_message": "已整理，请核对。",
+            "product_name": "短动作转接线",
+            "product_code": "SHORT-ACTION-01",
+            "route_name": "短动作转接线工艺路线",
+            "route_summary": "",
+            "steps": [{"title": "裁线", "action": "裁线", "why": "备料", "method": ["裁线"]}],
+            "unknowns": [],
+            "warnings": [],
+        }
+        description = "短动作转接线，编号 SHORT-ACTION-01，先裁线。"
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+        ):
+            preview = service.preview(description)
+
+        self.assertTrue(preview["can_create"])
+        result = service.confirm(preview["draft_id"], worker="worker-short-action")
+
+        step = self.store.get_route(result["route_id"])["steps"][0]
+        self.assertEqual(step["action"], "完成“裁线”这项操作")
+        self.assertEqual(step["why"], "本工序用于备料")
+        self.assertEqual(step["review_state"], "needs_revision")
+
+    def test_new_project_preview_blocks_unexpected_step_validation_errors(self) -> None:
+        service = NaturalLanguageProjectService(self.store, documents=Mock())
+        raw = {
+            "intent": "create_project",
+            "assistant_message": "已整理，请核对。",
+            "product_name": "预检转接线",
+            "product_code": "PREFLIGHT-01",
+            "route_name": "预检转接线工艺路线",
+            "route_summary": "",
+            "steps": [{"title": "裁线", "action": "完成裁线", "why": "准备线材", "method": ["执行裁线"]}],
+            "unknowns": [],
+            "warnings": [],
+        }
+        with (
+            patch.object(NaturalLanguageSopAssistant, "_llm_config", return_value={"api_key": "x", "base_url": "https://example.test/v1", "model": "test"}),
+            patch.object(service, "_request_with_retry", return_value=raw),
+            patch.object(service, "_to_route_step", side_effect=ValueError("internal validation detail")),
+        ):
+            preview = service.preview("预检转接线，编号 PREFLIGHT-01，先完成裁线。")
+
+        self.assertFalse(preview["can_create"])
+        self.assertTrue(any(item["blocking"] for item in preview["unknowns"]))
+        self.assertIn("第 1 道工序“裁线”内容不完整", " ".join(preview["warnings"]))
+        self.assertNotIn("internal validation detail", " ".join(preview["warnings"]))
 
     def test_sanitize_wraps_a_single_warning_string_as_one_warning(self) -> None:
         route = self.store.get_route(self.route_id)
@@ -594,6 +1058,22 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn('id="routeEditor"', simple_html)
         self.assertIn(".chat[hidden]{display:none}", simple_html)
         self.assertIn('id="retryPreview"', simple_html)
+        self.assertIn('id="newProject"', simple_html)
+        self.assertIn('id="projectBackdrop"', simple_html)
+        self.assertIn("/api/projects/preview", simple_html)
+        self.assertIn("/api/projects/confirm", simple_html)
+        self.assertIn('id="projectImageInput"', simple_html)
+        self.assertIn(".project-intake-grid{display:grid", simple_html)
+        self.assertIn(".project-intake-step{width:32px;height:32px", simple_html)
+        self.assertIn(".project-upload-zone{min-height:112px", simple_html)
+        self.assertIn(".project-image-input{position:fixed;left:-9999px", simple_html)
+        self.assertIn("开始整理并生成 SOP", simple_html)
+        self.assertIn("data_base64", simple_html)
+        self.assertIn("images})", simple_html)
+        self.assertIn("renderProjectComplete(result,preview)", simple_html)
+        self.assertIn("loadProducts(result.route_id)", simple_html)
+        self.assertIn("创建项目草稿", simple_html)
+        self.assertIn("AI 暂时没有连接上", simple_html)
         self.assertIn("retryDocumentPreview", simple_html)
         self.assertIn("documentInfo?.preview_status==='failed'", simple_html)
         self.assertIn("预览暂时不可用", simple_html)
@@ -603,6 +1083,10 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("openDeleteRouteStep", simple_html)
         self.assertIn("saveRouteOrder", simple_html)
         self.assertIn("createRouteRevision", simple_html)
+        self.assertIn("route-layout-button", simple_html)
+        self.assertIn("openWorkImageLayout", simple_html)
+        self.assertIn("/work-image-layout", simple_html)
+        self.assertIn("调整指导书图片格数", simple_html)
         self.assertIn("/steps/reviewable", simple_html)
         self.assertIn("/split/reviewable", simple_html)
         self.assertNotIn("scrollIntoView", simple_html)

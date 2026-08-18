@@ -68,6 +68,7 @@ class RouteStepDraft(BaseModel):
     parent_step_code: str | None = None
     action: str
     why: str
+    work_image_slots: int = Field(default=6, ge=1, le=6)
     inputs: list[str] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list)
     tool_equipment: list[str] = Field(default_factory=list)

@@ -5,18 +5,34 @@ import base64
 import binascii
 import json
 import re
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import ReviewFieldPatch, RouteSectionPatch, RouteStepDraft
 from .conversation import SopConversationService
 from .documents import SopDocumentService
 from .nl_assistant import NaturalLanguageSopAssistant
+from .project_creation import (
+    PROJECT_IMAGE_BYTES_LIMIT,
+    PROJECT_IMAGE_LIMIT,
+    PROJECT_IMAGE_PACKAGE_LIMIT,
+    NaturalLanguageProjectService,
+)
 from .store import SopKnowledgeStore
+
+
+class _ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class ReviewerRequest(BaseModel):
@@ -73,6 +89,14 @@ class MediaUploadRequest(BaseModel):
     source_note: str = ""
 
 
+class RouteReferenceUploadRequest(BaseModel):
+    original_name: str
+    mime_type: str
+    data_base64: str
+    uploaded_by: str
+    source_note: str = ""
+
+
 class MediaLinkRequest(BaseModel):
     step_id: int
     asset_id: int
@@ -94,9 +118,18 @@ class MediaLinkConfirmRequest(BaseModel):
     reviewer: str
 
 
+class RouteReferenceConfirmRequest(BaseModel):
+    reviewer: str
+
+
 class StepConfirmRequest(BaseModel):
     reviewer: str
     comment: str = ""
+
+
+class WorkImageLayoutRequest(BaseModel):
+    slots: int = Field(ge=1, le=6)
+    reviewer: str
 
 
 class ChatRequest(BaseModel):
@@ -105,6 +138,51 @@ class ChatRequest(BaseModel):
     use_ai: bool = True
     selected_step_id: int | None = None
     pending_message_id: int | None = None
+
+
+class ProjectImageRequest(BaseModel):
+    source_id: str
+    original_name: str
+    mime_type: str
+    data_base64: str
+
+
+class ProjectPreviewRequest(BaseModel):
+    description: str
+    previous_draft_id: str | None = None
+    use_ai: bool = True
+    images: list[ProjectImageRequest] = Field(default_factory=list)
+
+
+class ProjectConfirmRequest(BaseModel):
+    draft_id: str
+    worker: str
+
+
+def _decode_project_images(items: list[ProjectImageRequest]) -> list[dict[str, Any]]:
+    if len(items) > PROJECT_IMAGE_LIMIT:
+        raise ValueError(f"一次最多上传 {PROJECT_IMAGE_LIMIT} 张图片。")
+    encoded_limit = ((PROJECT_IMAGE_BYTES_LIMIT + 2) // 3) * 4 + 4
+    package_encoded_limit = ((PROJECT_IMAGE_PACKAGE_LIMIT + 2) // 3) * 4 + PROJECT_IMAGE_LIMIT * 4
+    if sum(len(item.data_base64) for item in items) > package_encoded_limit:
+        raise ValueError("全部项目图片合计不能超过 50MB。")
+    decoded = []
+    for item in items:
+        if len(item.data_base64) > encoded_limit:
+            raise ValueError(f"{item.original_name or '图片'} 超过 10MB。")
+        try:
+            data = base64.b64decode(item.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError(f"{item.original_name or '图片'} 的数据无效。") from exc
+        decoded.append(
+            {
+                "source_id": item.source_id,
+                "original_name": item.original_name,
+                "mime_type": item.mime_type,
+                "data": data,
+            }
+        )
+    return decoded
 
 
 def _regenerate_document_after_route_change(
@@ -241,6 +319,18 @@ def _confirm_step_and_regenerate(
     return _regenerate_document_after_route_change(documents, result)
 
 
+def _update_work_image_layout_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    step_id: int,
+    slots: int,
+    reviewer: str,
+) -> dict[str, Any]:
+    result = store.set_step_work_image_slots(step_id, slots, reviewer=reviewer)
+    return _regenerate_document_after_route_change(documents, result)
+
+
 def create_review_app(db_path: str | Path):
     try:
         from fastapi import FastAPI, HTTPException
@@ -252,6 +342,7 @@ def create_review_app(db_path: str | Path):
     store.initialize()
     documents = SopDocumentService(store)
     conversation = SopConversationService(store, documents)
+    project_creation = NaturalLanguageProjectService(store, documents)
     app = FastAPI(title="SOP 工艺路线人工审核工作台", version="1.0.0")
 
     def guard(call):
@@ -275,6 +366,19 @@ def create_review_app(db_path: str | Path):
     @app.get("/api/products")
     def products() -> list[dict[str, Any]]:
         return store.list_products()
+
+    @app.post("/api/projects/preview")
+    def preview_project(request: ProjectPreviewRequest) -> dict[str, Any]:
+        return guard(lambda: project_creation.preview(
+            request.description,
+            previous_draft_id=request.previous_draft_id,
+            use_ai=request.use_ai,
+            images=_decode_project_images(request.images),
+        ))
+
+    @app.post("/api/projects/confirm")
+    def confirm_project(request: ProjectConfirmRequest) -> dict[str, Any]:
+        return guard(lambda: project_creation.confirm(request.draft_id, worker=request.worker))
 
     @app.get("/api/routes/{route_id}")
     def route(route_id: int) -> dict[str, Any]:
@@ -350,6 +454,21 @@ def create_review_app(db_path: str | Path):
             raise HTTPException(status_code=400, detail="图片数据不是有效 Base64") from exc
         return guard(lambda: store.upload_media_asset(route_id, original_name=request.original_name, mime_type=request.mime_type, data=data, uploaded_by=request.uploaded_by, source_note=request.source_note))
 
+    @app.post("/api/routes/{route_id}/reference-files")
+    def upload_route_reference(route_id: int, request: RouteReferenceUploadRequest) -> dict[str, Any]:
+        try:
+            data = base64.b64decode(request.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail="路线资料不是有效 Base64") from exc
+        return guard(lambda: store.upload_route_reference_file(
+            route_id,
+            original_name=request.original_name,
+            mime_type=request.mime_type,
+            data=data,
+            uploaded_by=request.uploaded_by,
+            source_note=request.source_note,
+        ))
+
     @app.post("/api/media/link")
     def link_media(request: MediaLinkRequest) -> dict[str, Any]:
         return guard(lambda: _link_media_and_regenerate(
@@ -385,9 +504,23 @@ def create_review_app(db_path: str | Path):
         asset = guard(lambda: store.get_media_asset(asset_id))
         return FileResponse(asset["storage_path"], media_type=asset["mime_type"], filename=asset["original_name"])
 
+    @app.get("/api/reference-files/{file_id}")
+    def route_reference_file(file_id: int):
+        from fastapi.responses import FileResponse
+        asset = guard(lambda: store.get_route_reference_file(file_id))
+        return FileResponse(asset["storage_path"], media_type=asset["mime_type"], filename=asset["original_name"])
+
     @app.delete("/api/media/{asset_id}")
     def delete_media(asset_id: int) -> dict[str, Any]:
         return guard(lambda: _delete_media_and_regenerate(store, documents, asset_id))
+
+    @app.delete("/api/reference-files/{file_id}")
+    def delete_route_reference(file_id: int) -> dict[str, Any]:
+        return guard(lambda: store.delete_route_reference_file(file_id))
+
+    @app.post("/api/reference-files/{file_id}/confirm")
+    def confirm_route_reference(file_id: int, request: RouteReferenceConfirmRequest) -> dict[str, Any]:
+        return guard(lambda: store.confirm_route_reference_file(file_id, reviewer=request.reviewer))
 
     @app.post("/api/steps/{step_id}/confirm")
     def confirm_step(step_id: int, request: StepConfirmRequest) -> dict[str, Any]:
@@ -397,6 +530,16 @@ def create_review_app(db_path: str | Path):
             step_id=step_id,
             reviewer=request.reviewer,
             comment=request.comment,
+        ))
+
+    @app.post("/api/steps/{step_id}/work-image-layout")
+    def update_work_image_layout(step_id: int, request: WorkImageLayoutRequest) -> dict[str, Any]:
+        return guard(lambda: _update_work_image_layout_and_regenerate(
+            store,
+            documents,
+            step_id=step_id,
+            slots=request.slots,
+            reviewer=request.reviewer,
         ))
 
     @app.get("/api/knowledge/search")
@@ -539,6 +682,7 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
     store.initialize()
     documents = SopDocumentService(store)
     conversation = SopConversationService(store, documents)
+    project_creation = NaturalLanguageProjectService(store, documents)
 
     class ReviewHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -627,6 +771,12 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     self._send_file(asset["storage_path"], asset["mime_type"])
                 except Exception as exc:
                     self._send(400, {"detail": str(exc)})
+            elif match := re.fullmatch(r"/api/reference-files/(\d+)", path):
+                try:
+                    asset = store.get_route_reference_file(int(match.group(1)))
+                    self._send_file(asset["storage_path"], asset["mime_type"], filename=asset["original_name"], attachment=True)
+                except Exception as exc:
+                    self._send(400, {"detail": str(exc)})
             elif match := re.fullmatch(r"/api/routes/(\d+)", path):
                 self._run(lambda: store.get_route(int(match.group(1))))
             elif match := re.fullmatch(r"/api/routes/(\d+)/sections/history", path):
@@ -673,6 +823,9 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                 asset_id = int(match.group(1))
                 self._run(lambda: _delete_media_and_regenerate(store, documents, asset_id))
                 return
+            if match := re.fullmatch(r"/api/reference-files/(\d+)", path):
+                self._run(lambda: store.delete_route_reference_file(int(match.group(1))))
+                return
             if match := re.fullmatch(r"/api/steps/(\d+)", path):
                 step_id = int(match.group(1))
                 deleted_by = query.get("deleted_by", ["web_reviewer"])[0]
@@ -685,6 +838,19 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
 
         def do_POST(self) -> None:
             body = self._body()
+            if self.path == "/api/projects/preview":
+                request = ProjectPreviewRequest.model_validate(body)
+                self._run(lambda: project_creation.preview(
+                    request.description,
+                    previous_draft_id=request.previous_draft_id,
+                    use_ai=request.use_ai,
+                    images=_decode_project_images(request.images),
+                ))
+                return
+            if self.path == "/api/projects/confirm":
+                request = ProjectConfirmRequest.model_validate(body)
+                self._run(lambda: project_creation.confirm(request.draft_id, worker=request.worker))
+                return
             if match := re.fullmatch(r"/api/routes/(\d+)/chat", self.path):
                 route_id = int(match.group(1))
                 service = conversation
@@ -733,6 +899,23 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     return store.upload_media_asset(route_id, original_name=body["original_name"], mime_type=body["mime_type"], data=data, uploaded_by=body["uploaded_by"], source_note=body.get("source_note", ""))
                 self._run(upload)
                 return
+            if match := re.fullmatch(r"/api/routes/(\d+)/reference-files", self.path):
+                route_id = int(match.group(1))
+                def upload_reference() -> dict[str, Any]:
+                    try:
+                        data = base64.b64decode(body["data_base64"], validate=True)
+                    except (ValueError, binascii.Error) as exc:
+                        raise ValueError("路线资料不是有效 Base64") from exc
+                    return store.upload_route_reference_file(
+                        route_id,
+                        original_name=body["original_name"],
+                        mime_type=body["mime_type"],
+                        data=data,
+                        uploaded_by=body["uploaded_by"],
+                        source_note=body.get("source_note", ""),
+                    )
+                self._run(upload_reference)
+                return
             if self.path == "/api/media/link":
                 self._run(lambda: _link_media_and_regenerate(
                     store,
@@ -763,6 +946,11 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     reviewer=request.reviewer,
                 ))
                 return
+            if match := re.fullmatch(r"/api/reference-files/(\d+)/confirm", self.path):
+                self._run(lambda: store.confirm_route_reference_file(
+                    int(match.group(1)), reviewer=body["reviewer"]
+                ))
+                return
             if match := re.fullmatch(r"/api/steps/(\d+)/confirm", self.path):
                 self._run(lambda: _confirm_step_and_regenerate(
                     store,
@@ -770,6 +958,16 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     step_id=int(match.group(1)),
                     reviewer=body["reviewer"],
                     comment=body.get("comment", ""),
+                ))
+                return
+            if match := re.fullmatch(r"/api/steps/(\d+)/work-image-layout", self.path):
+                request = WorkImageLayoutRequest.model_validate(body)
+                self._run(lambda: _update_work_image_layout_and_regenerate(
+                    store,
+                    documents,
+                    step_id=int(match.group(1)),
+                    slots=request.slots,
+                    reviewer=request.reviewer,
                 ))
                 return
             if match := re.fullmatch(r"/api/routes/(\d+)/steps/reviewable", self.path):
@@ -839,7 +1037,7 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     return
             self._send(404, {"detail": "not found"})
 
-    return ThreadingHTTPServer((host, port), ReviewHandler)
+    return _ExclusiveThreadingHTTPServer((host, port), ReviewHandler)
 
 
 def main(argv: list[str] | None = None) -> int:

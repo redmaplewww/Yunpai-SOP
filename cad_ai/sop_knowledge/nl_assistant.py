@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import http.client
 import json
-import os
 import re
 import time
 import urllib.error
-import urllib.request
-from pathlib import Path
 from typing import Any
+
+from .llm_wire import load_llm_config, request_json_object
 
 
 ARRAY_FIELDS = {
@@ -232,26 +231,7 @@ class NaturalLanguageSopAssistant:
             "recent_conversation": recent_history,
             "locked_target": locked_step,
         }, ensure_ascii=False)
-        payload = json.dumps({
-            "model": config["model"],
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-        }, ensure_ascii=False).encode("utf-8")
-        url = config["base_url"].rstrip("/") + "/chat/completions"
-        request = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json", "Authorization": "Bearer " + config["api_key"]},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        content = body["choices"][0]["message"]["content"]
-        if isinstance(content, list):
-            content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip())
-        return json.loads(content)
+        return request_json_object(system=system, user=user, config=config, timeout=self.timeout)
 
     def _llm_preview_with_retry(
         self,
@@ -428,20 +408,5 @@ class NaturalLanguageSopAssistant:
         return [item.strip() for item in re.split(r"\s*(?:、|，|,|\||/|→|->)\s*", value.strip()) if item.strip()]
 
     @staticmethod
-    def _llm_config() -> dict[str, str] | None:
-        project_root = Path(__file__).resolve().parents[2]
-        local_env = project_root / ".env.local"
-        if local_env.exists():
-            for line in local_env.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#") or "=" not in stripped:
-                    continue
-                key, value = stripped.split("=", 1)
-                if key.strip() in {"LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}:
-                    os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
-        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL")
-        model = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL")
-        if not all((api_key, base_url, model)):
-            return None
-        return {"api_key": api_key, "base_url": base_url, "model": model}
+    def _llm_config() -> dict[str, Any] | None:
+        return load_llm_config()

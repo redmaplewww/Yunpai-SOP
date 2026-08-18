@@ -1,7 +1,7 @@
 {
-  "schema_version": "2.0",
-  "package_id": "yunpai.sop_template.ai_handoff.v2",
-  "template_id": "yunpai.sop.hdmi-cable.multi-page.v3",
+  "schema_version": "2.1",
+  "package_id": "yunpai.sop_template.ai_handoff.v3",
+  "template_id": "yunpai.sop.hdmi-cable.multi-page.v4",
   "workspace_root": ".",
   "primary_instruction": "docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md",
   "copyable_prompt": "docs/handoff/sop_template_ai_handoff/NEXT_SESSION_PROMPT.md",
@@ -13,7 +13,16 @@
     "rendered_page_formula": "1 + route_step_count",
     "current_hdmi_route_step_count": 17,
     "current_expected_pages": 18,
-    "step_order_each_instruction": "1,2,3 / 6,5,4"
+    "work_image_slots_per_instruction": "route_step.work_image_slots; integer 1..6; default 6",
+    "step_order_by_slots": {
+      "1": "1",
+      "2": "1,2",
+      "3": "1,2,3",
+      "4": "1,2 / 4,3",
+      "5": "1,2,3 / 5,4",
+      "6": "1,2,3 / 6,5,4"
+    },
+    "ie_action_rows_formula": "work_image_slots"
   },
   "document": "SOP完整模板_HDMI线制作_草案.docx",
   "expected_outputs": [
@@ -36,7 +45,9 @@
     "signoff_values_blank": true,
     "images_blank_until_human_confirmation": true,
     "no_auto_release": true,
-    "no_fabricated_ie_or_process_facts": true
+    "no_fabricated_ie_or_process_facts": true,
+    "confirmed_images_never_silently_truncated": true,
+    "layout_change_requires_human_review": true
   },
   "legacy_usb_c_reference": {
     "template_id": "yunpai.sop.usb_c_cable_packaging.two_page.v1",
