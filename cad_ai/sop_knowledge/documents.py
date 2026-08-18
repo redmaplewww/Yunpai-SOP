@@ -16,8 +16,9 @@ from typing import Any
 from .store import SopKnowledgeStore
 
 CURRENT_PREVIEW_DIR_NAME = "preview-current"
+VERSIONED_PREVIEW_DIR_PREFIX = "preview-version-"
 
-MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
+MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v4"
 MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_repeated_landscape_work_instructions"
 MULTI_PAGE_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 
@@ -122,15 +123,20 @@ class SopDocumentService:
         if manifest.get("template_id") != MULTI_PAGE_TEMPLATE_ID or manifest.get("layout_mode") != MULTI_PAGE_LAYOUT_MODE:
             return self.generate(route_id)
         preview_path = Path(manifest["pdf_path"])
-        if preview_path.parent.name != CURRENT_PREVIEW_DIR_NAME:
+        if not self._is_published_preview_directory(preview_path.parent):
             return self.generate(route_id)
         if not self._is_readable_file(Path(manifest["docx_path"])) or not self._is_readable_file(preview_path):
             return self.generate(route_id)
         if manifest.get("route_fingerprint") != self._route_fingerprint(route_id):
             return self.generate(route_id)
         page_paths = [Path(item) for item in manifest.get("page_paths") or []]
-        if len(page_paths) != int(manifest.get("page_count") or 0) or not all(path.is_file() for path in page_paths):
-            page_paths = self._render_pdf_pages(Path(manifest["pdf_path"]), Path(manifest["pdf_path"]).parent)
+        if len(page_paths) != int(manifest.get("page_count") or 0) or not all(self._is_existing_file(path) for path in page_paths):
+            if not self._is_readable_file(preview_path):
+                return self.generate(route_id)
+            try:
+                page_paths = self._render_pdf_pages(preview_path, preview_path.parent)
+            except Exception:
+                return self.generate(route_id)
             manifest["page_paths"] = [str(path.resolve()) for path in page_paths]
             manifest["page_count"] = len(page_paths)
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -167,15 +173,26 @@ class SopDocumentService:
         raise ValueError("unsupported document asset")
 
     @staticmethod
+    def _is_published_preview_directory(path: Path) -> bool:
+        return path.name == CURRENT_PREVIEW_DIR_NAME or path.name.startswith(VERSIONED_PREVIEW_DIR_PREFIX)
+
+    @staticmethod
     def _is_readable_file(path: Path) -> bool:
-        if not path.is_file():
-            return False
         try:
+            if not path.is_file():
+                return False
             with path.open("rb"):
                 pass
         except OSError:
             return False
         return True
+
+    @staticmethod
+    def _is_existing_file(path: Path) -> bool:
+        try:
+            return path.is_file()
+        except OSError:
+            return False
 
     @staticmethod
     def public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -263,9 +280,9 @@ class SopDocumentService:
             target_pdf = staging_output / f"{docx_path.stem}.pdf"
             if pdf_files[0] != target_pdf:
                 pdf_files[0].replace(target_pdf)
-            self._publish_preview_directory(staging_output, output_dir)
-        pdf_files = sorted(output_dir.glob("*.pdf"))
-        page_files = sorted(output_dir.glob("page-*.png"))
+            published_dir = self._publish_preview_directory(staging_output, output_dir)
+        pdf_files = sorted(published_dir.glob("*.pdf"))
+        page_files = sorted(published_dir.glob("page-*.png"))
         return {
             "pdf_path": str(pdf_files[0].resolve()),
             "page_paths": [str(item.resolve()) for item in page_files],
@@ -273,11 +290,18 @@ class SopDocumentService:
         }
 
     @staticmethod
-    def _publish_preview_directory(candidate: Path, output_dir: Path) -> None:
+    def _publish_preview_directory(candidate: Path, output_dir: Path) -> Path:
         backup = output_dir.parent / f".{output_dir.name}-backup-{uuid.uuid4().hex}"
         had_previous = output_dir.exists()
         if had_previous:
-            os.replace(output_dir, backup)
+            try:
+                os.replace(output_dir, backup)
+            except PermissionError:
+                # A browser or document viewer can hold a live preview open on Windows.
+                # Publish the new immutable preview beside it instead of replacing the locked directory.
+                versioned_output = output_dir.parent / f"{VERSIONED_PREVIEW_DIR_PREFIX}{uuid.uuid4().hex}"
+                os.replace(candidate, versioned_output)
+                return versioned_output
         try:
             os.replace(candidate, output_dir)
         except Exception:
@@ -287,6 +311,7 @@ class SopDocumentService:
         finally:
             if backup.exists():
                 shutil.rmtree(backup, ignore_errors=True)
+        return output_dir
 
     def _preview_failure_path(self, route_id: int) -> Path:
         return self.root / f"route_{route_id}" / "preview_failure.json"

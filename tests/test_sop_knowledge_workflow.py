@@ -326,6 +326,58 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
                     "UPDATE operation_template_version SET definition_json='{}' WHERE id=?", (version_id,)
                 )
 
+    def test_builtin_server_refuses_a_second_listener_on_the_same_port(self) -> None:
+        first = create_builtin_server(self.store.path, "127.0.0.1", 0)
+        try:
+            port = first.server_address[1]
+            with self.assertRaises(OSError):
+                duplicate = create_builtin_server(self.store.path, "127.0.0.1", port)
+                duplicate.server_close()
+        finally:
+            first.server_close()
+
+    def test_builtin_server_uploads_and_reviews_route_reference_files(self) -> None:
+        route_id = self.add_route("TEST-ROUTE-REFERENCE")
+        server = create_builtin_server(self.store.path, "127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+
+            def post(path: str, body: dict[str, object]) -> dict[str, object]:
+                request = urllib.request.Request(
+                    base + path,
+                    data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                    method="POST",
+                    headers={"Content-Type": "application/json; charset=utf-8"},
+                )
+                return json.loads(urllib.request.urlopen(request, timeout=5).read())
+
+            content = b"%PDF-1.7\nroute reference\n"
+            asset = post(
+                f"/api/routes/{route_id}/reference-files",
+                {
+                    "original_name": "工艺BOM.pdf",
+                    "mime_type": "application/pdf",
+                    "data_base64": base64.b64encode(content).decode("ascii"),
+                    "uploaded_by": "http_reviewer",
+                    "source_note": "HTTP 上传资料",
+                },
+            )
+            self.assertEqual(asset["review_state"], "needs_revision")
+            downloaded = urllib.request.urlopen(base + f"/api/reference-files/{asset['id']}", timeout=5).read()
+            self.assertEqual(downloaded, content)
+            confirmed = post(f"/api/reference-files/{asset['id']}/confirm", {"reviewer": "http_reviewer"})
+            self.assertEqual(confirmed["status"], "confirmed")
+
+            request = urllib.request.Request(base + f"/api/reference-files/{asset['id']}", method="DELETE")
+            deleted = json.loads(urllib.request.urlopen(request, timeout=5).read())
+            self.assertEqual(deleted["status"], "deleted")
+            self.assertEqual(self.store.get_route(route_id)["reference_files"], [])
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_proofing_and_full_workbenches_are_exposed(self) -> None:
         route_id = self.add_route("TEST-UI")
         server = create_builtin_server(self.store.path, "127.0.0.1", 0)
@@ -335,7 +387,7 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             base = f"http://127.0.0.1:{server.server_address[1]}"
             simple_page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
             self.assertIn("DOCX 实时预览", simple_page)
-            self.assertIn("发送并更新 DOCX", simple_page)
+            self.assertIn('<button id="send" class="send">发送</button>', simple_page)
             self.assertIn("打开完整版", simple_page)
             self.assertIn('id="docPages"', simple_page)
             self.assertIn("doc.page_urls", simple_page)
@@ -412,6 +464,16 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
                     return json.loads(urllib.request.urlopen(request, timeout=10).read())
 
                 before = self.store.get_route(route_id)["steps"]
+                layout = post(
+                    f"/api/steps/{before[0]['id']}/work-image-layout",
+                    {"slots": 3, "reviewer": "http-route-editor"},
+                )
+                self.assertEqual(layout["status"], "layout_updated")
+                self.assertEqual(layout["work_image_slots"], 3)
+                self.assertEqual(layout["document"]["version_token"], "route-editor-test")
+                self.assertEqual(
+                    self.store.get_route(route_id)["steps"][0]["work_image_slots"], 3
+                )
                 added = post(
                     f"/api/routes/{route_id}/steps/reviewable",
                     {
@@ -455,10 +517,47 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(merged["status"], "merged")
                 self.assertEqual(merged["document"]["version_token"], "route-editor-test")
-                self.assertEqual(generate.call_count, 4)
+                self.assertEqual(generate.call_count, 5)
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_work_image_layout_protects_confirmed_media_and_survives_revision(self) -> None:
+        route_id = self.add_route("TEST-WORK-IMAGE-LAYOUT", count=2)
+        step = self.store.get_route(route_id)["steps"][0]
+
+        changed = self.store.set_step_work_image_slots(
+            step["id"], 2, reviewer="layout-reviewer"
+        )
+        self.assertTrue(changed["changed"])
+        self.assertEqual(changed["page_number"], 2)
+        stored = self.store.get_route(route_id)["steps"][0]
+        self.assertEqual(stored["work_image_slots"], 2)
+        self.assertEqual(stored["review_state"], "needs_revision")
+
+        for index in range(2):
+            asset = self.store.upload_media_asset(
+                route_id,
+                original_name=f"confirmed-{index}.png",
+                mime_type="image/png",
+                data=PNG_1X1 + bytes([index]),
+                uploaded_by="layout-reviewer",
+            )
+            link_id = self.store.link_media_asset(
+                step["id"], asset["id"], caption=f"已确认图片 {index + 1}"
+            )
+            self.store.confirm_media_link(link_id, reviewer="layout-reviewer")
+
+        with self.assertRaisesRegex(ValueError, "2 张已确认图片"):
+            self.store.set_step_work_image_slots(step["id"], 1, reviewer="layout-reviewer")
+
+        self.approve(route_id)
+        revision_id = self.store.create_revision(route_id, created_by="layout-reviewer")
+        self.assertEqual(
+            self.store.get_route(revision_id)["steps"][0]["work_image_slots"], 2
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "approved route is immutable"):
+            self.store.set_step_work_image_slots(step["id"], 3, reviewer="layout-reviewer")
 
     def test_builtin_server_media_arrangement_regenerates_documents(self) -> None:
         route_id = self.add_route("TEST-MEDIA-ARRANGEMENT")

@@ -17,11 +17,17 @@ $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 $stem = [System.IO.Path]::GetFileNameWithoutExtension($inputFile)
 $pdfPath = Join-Path $outputRoot ($stem + '.pdf')
 
+# Never accept a PDF left by an earlier conversion as the result of this run.
+if (Test-Path -LiteralPath $pdfPath) {
+    Remove-Item -LiteralPath $pdfPath -Force
+}
+
 $word = $null
 $document = $null
 $pageCount = 0
 $conversionBackend = $null
 $wordError = $null
+$wordSucceeded = $false
 try {
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
@@ -29,10 +35,14 @@ try {
     $document = $word.Documents.Open($inputFile, $false, $true)
     $document.ExportAsFixedFormat($pdfPath, 17)
     $pageCount = [int]$document.ComputeStatistics(2)
+    $wordSucceeded = Test-Path -LiteralPath $pdfPath
 }
 catch {
     # Word is optional: use LibreOffice below when its COM component is absent or unusable.
     $wordError = $_.Exception.Message
+    if (Test-Path -LiteralPath $pdfPath) {
+        Remove-Item -LiteralPath $pdfPath -Force
+    }
 }
 finally {
     if ($document) { try { $document.Close($false) } catch { } }
@@ -41,7 +51,7 @@ finally {
     [GC]::WaitForPendingFinalizers()
 }
 
-if (-not (Test-Path -LiteralPath $pdfPath)) {
+if (-not $wordSucceeded) {
     $sofficeCandidates = @(
         (Get-Command soffice.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
         (Join-Path $env:ProgramFiles 'LibreOffice\program\soffice.exe'),

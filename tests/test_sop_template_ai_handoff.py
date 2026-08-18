@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 
 from docx import Document
+from docx.enum.table import WD_ROW_HEIGHT_RULE
 
 from scripts.generate_sop_template_ai_handoff import (
     CENTER_FLOWCHART_NAME,
@@ -137,8 +138,70 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                     ["", "", ""],
                 )
             second_instruction_body = document.tables[9]
-            self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 4).text)
-            self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 4).text)
+            self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 7).text)
+            self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 7).text)
+
+    def test_route_backed_hdmi_supports_every_work_image_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SopKnowledgeStore(root / "knowledge.sqlite3")
+            store.initialize()
+            store.ensure_process_family("test_family", "测试工艺族")
+            identity = make_identity("HDMI-LAYOUT-TEST")
+            store.upsert_product(identity, {"class": "cable"})
+            route_id = store.create_route(make_route(identity, 6))
+            steps = store.get_route(route_id)["steps"]
+            store.update_step_field(
+                steps[0]["id"],
+                "method",
+                ["准备物料", "核对方向", "执行作业", "记录结果"],
+                reviewer="layout-tester",
+            )
+            for slot_count, step in enumerate(steps, start=1):
+                store.set_step_work_image_slots(step["id"], slot_count, reviewer="layout-tester")
+
+            result = generate_route_package(
+                root / "package",
+                document_date="2026-08-18",
+                db_path=store.path,
+                route_id=route_id,
+            )
+
+            document = Document(result["document_docx"])
+            expected_positions = {
+                1: [(0, 1, "1")],
+                2: [(0, 1, "1"), (0, 4, "2")],
+                3: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3")],
+                4: [(0, 1, "1"), (0, 4, "2"), (3, 4, "3"), (3, 1, "4")],
+                5: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3"), (3, 4, "4"), (3, 1, "5")],
+                6: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3"), (3, 5, "4"), (3, 3, "5"), (3, 1, "6")],
+            }
+            for page_index, slot_count in enumerate(range(1, 7)):
+                base = 4 + page_index * 4
+                body = document.tables[base + 1]
+                ie_table = document.tables[base + 2]
+                self.assertEqual(len(ie_table.rows), 2 + slot_count)
+                self.assertEqual(ie_table.rows[0].height_rule, WD_ROW_HEIGHT_RULE.EXACTLY)
+                self.assertEqual(ie_table.rows[1].height_rule, WD_ROW_HEIGHT_RULE.EXACTLY)
+                self.assertGreaterEqual(ie_table.rows[0].height.twips, 360)
+                self.assertGreaterEqual(ie_table.rows[1].height.twips, 400)
+                for row, column, prefix in expected_positions[slot_count]:
+                    self.assertTrue(body.cell(row, column).text.strip().startswith(prefix))
+            first_body_text = "\n".join(
+                cell.text for row in document.tables[5].rows for cell in row.cells
+            )
+            self.assertGreaterEqual(document.tables[5].rows[5].height.twips, 1300)
+            for method in ("准备物料", "核对方向", "执行作业", "记录结果"):
+                self.assertIn(method, first_body_text)
+
+            manifest = json.loads((root / "package" / MANIFEST_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["work_image_slots"] for item in manifest["layout"]["instruction_layouts"]],
+                [1, 2, 3, 4, 5, 6],
+            )
+            validation = json.loads((root / "package" / VALIDATION_NAME).read_text(encoding="utf-8"))
+            self.assertTrue(validation["checks"]["ie_action_rows_match_work_image_slots"])
+            self.assertTrue(validation["checks"]["visual_step_order_every_page"])
 
     def test_route_backed_hdmi_embeds_only_confirmed_step_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

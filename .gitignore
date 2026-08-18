@@ -10,4 +10,8 @@ outputs/
 *.log
 *.pem
 *.key
+.Codex/
+latest-check.docx
+tests/.edge-*/
+tests/screenshots/
 

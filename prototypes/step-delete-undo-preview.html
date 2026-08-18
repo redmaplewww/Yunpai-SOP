@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOP 工序删除与撤销原型</title>
+  <style>
+    :root {
+      --bg: #ecebe7;
+      --paper: #ffffff;
+      --paper-soft: #f8f7f4;
+      --ink: #202326;
+      --muted: #686d72;
+      --line: #d6d4ce;
+      --line-strong: #bbbdb8;
+      --blue: #23649a;
+      --blue-soft: #e9f2f8;
+      --green: #2e7650;
+      --green-soft: #e9f4ed;
+      --red: #b52d32;
+      --red-soft: #faecec;
+      --amber: #a36a0b;
+      --amber-soft: #fff4d7;
+      --shadow: 0 14px 34px rgba(38, 40, 38, .16);
+      --radius: 6px;
+      --ease: cubic-bezier(.2, .72, .2, 1);
+    }
+
+    * { box-sizing: border-box; letter-spacing: 0; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible { outline: 3px solid rgba(35, 100, 154, .22); outline-offset: 2px; }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: 58px 1fr;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 18px;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, .7);
+      z-index: 5;
+    }
+    .brand { min-width: 210px; }
+    .brand strong { display: block; font-size: 15px; }
+    .brand span { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .route-select {
+      width: min(360px, 35vw);
+      height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--paper);
+      padding: 0 10px;
+    }
+    .route-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .top-spacer { flex: 1; }
+    .icon-text-button, .primary-button, .plain-button {
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--paper);
+      padding: 0 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      transition: background .16s var(--ease), border-color .16s var(--ease), transform .16s var(--ease);
+    }
+    .icon-text-button:hover, .plain-button:hover { background: var(--paper-soft); border-color: #9fa29d; }
+    .icon-text-button:active, .plain-button:active, .primary-button:active { transform: translateY(1px); }
+    .primary-button { color: #fff; border-color: var(--blue); background: var(--blue); font-weight: 650; }
+    .primary-button:hover { background: #19547f; }
+    .count-badge {
+      min-width: 19px;
+      height: 19px;
+      padding: 0 5px;
+      border-radius: 10px;
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      background: var(--red);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .workspace {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 350px;
+      min-height: 0;
+    }
+    .main-pane { min-width: 0; padding: 22px 22px 44px; }
+    .side-pane {
+      border-left: 1px solid var(--line);
+      background: var(--paper);
+      padding: 22px 18px;
+    }
+    .section-head {
+      min-height: 42px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 15px;
+    }
+    .section-head h1 { margin: 0; font-size: 18px; line-height: 1.3; }
+    .section-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .doc-status {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 28px;
+      padding: 0 9px;
+      border: 1px solid #c8d8ce;
+      background: var(--green-soft);
+      color: var(--green);
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    .flow-shell {
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 3px 2px 14px;
+      scrollbar-color: #b8bab6 transparent;
+    }
+    .flow {
+      min-width: max-content;
+      height: 172px;
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+    }
+    .flow-item { display: flex; align-items: center; }
+    .connector {
+      width: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #8d938e;
+      font-size: 22px;
+      flex: none;
+    }
+    .step-card, .step-placeholder {
+      position: relative;
+      width: 208px;
+      height: 154px;
+      flex: none;
+      padding: 17px 18px 14px 22px;
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--green);
+      background: var(--paper);
+      cursor: pointer;
+      transition: border-color .18s var(--ease), box-shadow .18s var(--ease), transform .18s var(--ease), opacity .18s var(--ease);
+      animation: card-in .2s var(--ease) both;
+    }
+    .step-card:hover { border-color: #b4b7b2; box-shadow: 0 6px 16px rgba(46, 49, 46, .08); transform: translateY(-2px); }
+    .step-card.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); background: var(--blue-soft); }
+    .step-code { display: block; color: #426257; font: 700 12px Consolas, monospace; margin-bottom: 13px; }
+    .step-title { display: block; min-height: 46px; font-size: 16px; line-height: 1.42; font-weight: 700; text-wrap: pretty; }
+    .step-state { display: block; color: var(--green); font-size: 12px; margin-top: 9px; }
+    .delete-button {
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--red);
+      cursor: pointer;
+      font-size: 23px;
+      line-height: 1;
+      opacity: .92;
+    }
+    .delete-button:hover { background: var(--red-soft); }
+    .step-placeholder {
+      border: 1px dashed #cbb878;
+      background: var(--amber-soft);
+      color: #70531d;
+      cursor: default;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 16px;
+    }
+    .step-placeholder button { margin-top: 9px; background: transparent; border: 0; color: var(--blue); font-weight: 700; cursor: pointer; }
+    @keyframes card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+    .audit-strip {
+      margin-top: 18px;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      background: var(--paper-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .audit-strip strong { color: var(--ink); }
+    .audit-spacer { flex: 1; }
+    .audit-strip code { font: 12px Consolas, monospace; color: var(--blue); }
+
+    .side-pane h2 { margin: 0 0 5px; font-size: 16px; }
+    .side-pane > p { margin: 0 0 20px; color: var(--muted); font-size: 12px; }
+    .field { margin-bottom: 16px; }
+    .field label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+    .field-value { min-height: 38px; padding: 9px 10px; border: 1px solid var(--line); background: var(--paper-soft); line-height: 1.5; }
+    .field-value.multiline { min-height: 84px; }
+    .review-pill { display: inline-flex; padding: 4px 8px; color: var(--green); background: var(--green-soft); border-radius: 3px; font-size: 11px; }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(28, 31, 32, .36);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .16s var(--ease);
+    }
+    .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+    .modal {
+      width: min(430px, 100%);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      box-shadow: var(--shadow);
+      transform: translateY(8px) scale(.99);
+      transition: transform .18s var(--ease);
+    }
+    .modal-backdrop.open .modal { transform: none; }
+    .modal-head { display: flex; gap: 12px; padding: 20px 20px 12px; }
+    .danger-mark { width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--red-soft); color: var(--red); font-size: 22px; font-weight: 700; }
+    .modal h3 { margin: 0; font-size: 16px; }
+    .modal p { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; text-wrap: pretty; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px 18px; }
+    .danger-button { min-height: 34px; padding: 0 12px; border: 1px solid var(--red); border-radius: var(--radius); color: #fff; background: var(--red); cursor: pointer; font-weight: 650; }
+    .danger-button:hover { background: #98262b; }
+
+    .toast {
+      position: fixed;
+      z-index: 40;
+      left: 24px;
+      bottom: 22px;
+      width: min(460px, calc(100vw - 48px));
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 10px 10px 15px;
+      color: #fff;
+      background: #292c2d;
+      border: 1px solid #3e4243;
+      border-radius: 6px;
+      box-shadow: var(--shadow);
+      transform: translateY(18px);
+      opacity: 0;
+      pointer-events: none;
+      overflow: hidden;
+      transition: opacity .2s var(--ease), transform .2s var(--ease);
+    }
+    .toast.open { transform: none; opacity: 1; pointer-events: auto; }
+    .toast-message { flex: 1; min-width: 0; line-height: 1.45; }
+    .toast-message strong { display: block; font-size: 13px; }
+    .toast-message span { color: #c8cccd; font-size: 11px; }
+    .undo-button { height: 36px; flex: none; border: 1px solid #626869; border-radius: 4px; color: #fff; background: #3a3e3f; padding: 0 12px; cursor: pointer; font-weight: 700; }
+    .undo-button:hover { background: #4a4f50; border-color: #838889; }
+    .toast-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--blue); transform-origin: left; }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 58px 0 0;
+      z-index: 20;
+      background: rgba(28, 31, 32, .18);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s var(--ease);
+    }
+    .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+    .drawer {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: min(390px, 94vw);
+      background: var(--paper);
+      border-left: 1px solid var(--line);
+      box-shadow: -12px 0 30px rgba(36, 38, 36, .12);
+      transform: translateX(100%);
+      transition: transform .22s var(--ease);
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer-backdrop.open .drawer { transform: none; }
+    .drawer-head { min-height: 64px; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid var(--line); }
+    .drawer-head strong { font-size: 15px; }
+    .drawer-head button { margin-left: auto; width: 34px; height: 34px; border: 0; background: transparent; font-size: 24px; cursor: pointer; }
+    .deleted-list { padding: 12px; overflow: auto; }
+    .deleted-item { border-bottom: 1px solid var(--line); padding: 13px 4px; display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; }
+    .deleted-item:last-child { border-bottom: 0; }
+    .deleted-item strong { display: block; }
+    .deleted-item span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .restore-button { align-self: center; min-height: 32px; border: 1px solid #aebbc5; border-radius: 4px; color: var(--blue); background: var(--blue-soft); padding: 0 10px; cursor: pointer; font-weight: 650; }
+    .restore-button:hover { border-color: var(--blue); }
+    .empty-state { padding: 55px 24px; color: var(--muted); text-align: center; font-size: 13px; }
+
+    .tweaks-trigger {
+      position: fixed;
+      z-index: 15;
+      right: 18px;
+      bottom: 18px;
+      height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--paper);
+      padding: 0 11px;
+      box-shadow: 0 6px 18px rgba(40, 42, 40, .1);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .tweaks {
+      position: fixed;
+      z-index: 16;
+      right: 18px;
+      bottom: 60px;
+      width: 260px;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      display: none;
+    }
+    .tweaks.open { display: block; }
+    .tweaks-head { display: flex; align-items: center; margin-bottom: 10px; }
+    .tweaks-head strong { font-size: 12px; }
+    .tweaks-head button { margin-left: auto; border: 0; background: transparent; cursor: pointer; }
+    .segmented { display: grid; grid-template-columns: 1fr; gap: 5px; }
+    .segmented button { min-height: 34px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper-soft); text-align: left; padding: 0 9px; cursor: pointer; font-size: 12px; }
+    .segmented button.active { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); font-weight: 700; }
+
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; }
+      .side-pane { border-left: 0; border-top: 1px solid var(--line); }
+      .route-meta { display: none; }
+      .route-select { width: min(310px, 38vw); }
+    }
+    @media (max-width: 640px) {
+      .app { grid-template-rows: auto 1fr; }
+      .topbar { min-height: 58px; flex-wrap: wrap; padding: 9px 12px; }
+      .brand { min-width: 0; flex: 1; }
+      .route-select { order: 3; width: 100%; }
+      .main-pane { padding: 17px 12px 36px; }
+      .section-head { display: block; }
+      .doc-status { margin: 10px 0 0; }
+      .workspace { display: block; }
+      .toast { left: 12px; bottom: 12px; width: calc(100vw - 24px); }
+      .tweaks-trigger { right: 12px; bottom: 84px; }
+      .tweaks { right: 12px; bottom: 126px; }
+      .drawer-backdrop { inset: 104px 0 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><strong>SOP 修正台</strong><span>工艺路线与单页作业指导</span></div>
+      <select class="route-select" aria-label="选择产品路线">
+        <option>HDMI-DRAFT-001 · HDMI 成品线</option>
+      </select>
+      <span id="routeMeta" class="route-meta">v1 · draft · 6 个节点</span>
+      <div class="top-spacer"></div>
+      <button id="recentButton" class="icon-text-button" type="button" aria-label="打开最近删除">
+        <span aria-hidden="true">↶</span><span>最近删除</span><span id="deletedCount" class="count-badge" hidden>0</span>
+      </button>
+      <button class="primary-button" type="button">切换到校样台</button>
+    </header>
+
+    <main class="workspace">
+      <section class="main-pane">
+        <div class="section-head">
+          <div><h1>工艺路线</h1><p id="routeSummary">HDMI-DRAFT-001 · v1 · draft · 6 个节点</p></div>
+          <div id="docStatus" class="doc-status"><span class="status-dot"></span><span>DOCX 当前版本</span></div>
+        </div>
+        <div class="flow-shell">
+          <div id="flow" class="flow" aria-live="polite"></div>
+        </div>
+        <div class="audit-strip">
+          <strong>版本指纹</strong><code id="fingerprint">8f30a5c0d1b75e22</code>
+          <span class="audit-spacer"></span>
+          <span id="auditText">最近操作：工作人员确认 HD-03</span>
+        </div>
+      </section>
+
+      <aside class="side-pane">
+        <h2 id="detailTitle">裁线</h2>
+        <p id="detailCode">HD-03 · 第 3 道工序</p>
+        <div class="field"><label>审核状态</label><span class="review-pill">人工已确认</span></div>
+        <div class="field"><label>工序动作</label><div id="detailAction" class="field-value">按受控长度要求完成裁切并核对端部状态。</div></div>
+        <div class="field"><label>作业步骤</label><div id="detailMethod" class="field-value multiline">确认线材批次与方向要求。<br>核对裁线设备设定值。<br>首件测量裁切长度并记录。</div></div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="modalBackdrop" class="modal-backdrop" role="presentation">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <div class="danger-mark" aria-hidden="true">×</div>
+        <div><h3 id="modalTitle">删除工序</h3><p id="modalMessage"></p></div>
+      </div>
+      <div class="modal-actions">
+        <button id="cancelDelete" class="plain-button" type="button">取消</button>
+        <button id="confirmDelete" class="danger-button" type="button">删除工序</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite">
+    <div class="toast-message"><strong id="toastTitle"></strong><span id="toastSubtitle"></span></div>
+    <button id="undoButton" class="undo-button" type="button"><span aria-hidden="true">↶</span> 撤销</button>
+    <div id="toastProgress" class="toast-progress"></div>
+  </div>
+
+  <div id="drawerBackdrop" class="drawer-backdrop">
+    <aside class="drawer" aria-label="最近删除">
+      <div class="drawer-head"><strong>最近删除</strong><button id="closeDrawer" type="button" aria-label="关闭最近删除">×</button></div>
+      <div id="deletedList" class="deleted-list"></div>
+    </aside>
+  </div>
+
+  <button id="tweaksTrigger" class="tweaks-trigger" type="button">方案</button>
+  <aside id="tweaks" class="tweaks" aria-label="交互方案">
+    <div class="tweaks-head"><strong>删除反馈方式</strong><button id="closeTweaks" type="button" aria-label="关闭方案">×</button></div>
+    <div class="segmented">
+      <button type="button" data-mode="toast" class="active">底部撤销条（推荐）</button>
+      <button type="button" data-mode="inline">原位置保留撤销</button>
+      <button type="button" data-mode="drawer">删除后打开最近删除</button>
+    </div>
+  </aside>
+
+  <script>
+    const initialSteps = [
+      { id: 1, code: 'HD-01', title: '路线核对', action: '核对当前产品与受控工艺路线。', method: ['确认产品编码与版本。', '核对路线节点数量。'] },
+      { id: 2, code: 'HD-02', title: '物料齐套与批次防混', action: '核对物料齐套状态并防止混批。', method: ['核对工单与批次。', '确认物料标签一致。'] },
+      { id: 3, code: 'HD-03', title: '裁线', action: '按受控长度要求完成裁切并核对端部状态。', method: ['确认线材批次与方向要求。', '核对裁线设备设定值。', '首件测量裁切长度并记录。'] },
+      { id: 4, code: 'HD-04', title: '外被剥除与端部定长', action: '剥除外被并确认端部定长。', method: ['确认剥除长度。', '检查导体与屏蔽层无损伤。'] },
+      { id: 5, code: 'HD-05', title: '屏蔽层、排流线与接地准备', action: '整理屏蔽层与排流线。', method: ['整理屏蔽层。', '确认接地准备状态。'] },
+      { id: 6, code: 'HD-06', title: '芯线排序、校直与剥皮', action: '完成芯线排序与剥皮。', method: ['按线序校直芯线。', '剥除绝缘并检查导体。'] }
+    ];
+
+    let steps = initialSteps.map(step => ({ ...step, method: [...step.method] }));
+    let deleted = [];
+    let selectedId = 3;
+    let pendingDeleteId = null;
+    let lastDeletedId = null;
+    let mode = 'toast';
+    let toastTimer = null;
+
+    const $ = id => document.getElementById(id);
+    const flow = $('flow');
+
+    function renderFlow() {
+      const ordered = [...steps].sort((a, b) => a.id - b.id);
+      const nodes = [];
+      ordered.forEach((step, index) => {
+        if (index) nodes.push('<span class="connector" aria-hidden="true">→</span>');
+        nodes.push(`
+          <div class="flow-item">
+            <article class="step-card ${step.id === selectedId ? 'active' : ''}" data-select="${step.id}" tabindex="0">
+              <button class="delete-button" type="button" data-delete="${step.id}" aria-label="删除工序 ${escapeHtml(step.title)}" title="删除工序">×</button>
+              <span class="step-code">${String(index + 1).padStart(2, '0')} · ${escapeHtml(step.code)}</span>
+              <strong class="step-title">${escapeHtml(step.title)}</strong>
+              <span class="step-state">已确认</span>
+            </article>
+          </div>`);
+        if (mode === 'inline' && lastDeletedId && index < ordered.length - 1) {
+          const removed = deleted.find(item => item.id === lastDeletedId);
+          if (removed && removed.id === step.id + 1) {
+            nodes.push(`<span class="connector" aria-hidden="true">→</span><div class="step-placeholder"><div><strong>${escapeHtml(removed.title)} 已删除</strong><br><button type="button" data-restore="${removed.id}">↶ 撤销删除</button></div></div>`);
+          }
+        }
+      });
+      if (mode === 'inline' && lastDeletedId) {
+        const removed = deleted.find(item => item.id === lastDeletedId);
+        if (removed && !nodes.join('').includes(`data-restore="${removed.id}"`)) {
+          nodes.push(`<span class="connector" aria-hidden="true">→</span><div class="step-placeholder"><div><strong>${escapeHtml(removed.title)} 已删除</strong><br><button type="button" data-restore="${removed.id}">↶ 撤销删除</button></div></div>`);
+        }
+      }
+      flow.innerHTML = nodes.join('');
+      flow.querySelectorAll('[data-select]').forEach(card => {
+        card.addEventListener('click', event => {
+          if (event.target.closest('[data-delete]')) return;
+          selectedId = Number(card.dataset.select);
+          renderFlow();
+          renderDetails();
+        });
+        card.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); card.click(); }
+        });
+      });
+      flow.querySelectorAll('[data-delete]').forEach(button => button.addEventListener('click', event => {
+        event.stopPropagation();
+        openDeleteModal(Number(button.dataset.delete));
+      }));
+      flow.querySelectorAll('[data-restore]').forEach(button => button.addEventListener('click', () => restoreStep(Number(button.dataset.restore))));
+      updateMeta();
+    }
+
+    function renderDetails() {
+      const step = steps.find(item => item.id === selectedId) || steps[0];
+      if (!step) {
+        $('detailTitle').textContent = '未选择工序';
+        $('detailCode').textContent = '';
+        $('detailAction').textContent = '';
+        $('detailMethod').textContent = '';
+        return;
+      }
+      selectedId = step.id;
+      const sequence = [...steps].sort((a, b) => a.id - b.id).findIndex(item => item.id === step.id) + 1;
+      $('detailTitle').textContent = step.title;
+      $('detailCode').textContent = `${step.code} · 第 ${sequence} 道工序`;
+      $('detailAction').textContent = step.action;
+      $('detailMethod').innerHTML = step.method.map(escapeHtml).join('<br>');
+    }
+
+    function openDeleteModal(id) {
+      const step = steps.find(item => item.id === id);
+      if (!step) return;
+      pendingDeleteId = id;
+      $('modalMessage').textContent = `“${step.title}”将从流程和 DOCX 草稿中移除，删除后可在 24 小时内恢复。`;
+      $('modalBackdrop').classList.add('open');
+      window.setTimeout(() => $('cancelDelete').focus(), 40);
+    }
+
+    function closeDeleteModal() {
+      pendingDeleteId = null;
+      $('modalBackdrop').classList.remove('open');
+    }
+
+    function deleteStep() {
+      const step = steps.find(item => item.id === pendingDeleteId);
+      if (!step) return closeDeleteModal();
+      steps = steps.filter(item => item.id !== step.id);
+      deleted = [{ ...step, deletedAt: new Date(), originalIndex: initialSteps.findIndex(item => item.id === step.id) }, ...deleted.filter(item => item.id !== step.id)];
+      lastDeletedId = step.id;
+      if (selectedId === step.id) selectedId = steps.find(item => item.id > step.id)?.id || steps.at(-1)?.id || null;
+      closeDeleteModal();
+      renderFlow();
+      renderDetails();
+      renderDeleted();
+      setDocumentChanged(`已删除 ${step.code}`);
+      if (mode === 'drawer') openDrawer();
+      else if (mode === 'toast') showUndoToast(step);
+    }
+
+    function restoreStep(id) {
+      const step = deleted.find(item => item.id === id);
+      if (!step) return;
+      const { deletedAt, originalIndex, ...restored } = step;
+      steps = [...steps, restored].sort((a, b) => a.id - b.id);
+      deleted = deleted.filter(item => item.id !== id);
+      selectedId = id;
+      if (lastDeletedId === id) lastDeletedId = null;
+      hideToast();
+      renderFlow();
+      renderDetails();
+      renderDeleted();
+      setDocumentChanged(`已恢复 ${step.code}`);
+      $('auditText').textContent = `最近操作：已撤销删除“${step.title}”`;
+    }
+
+    function showUndoToast(step) {
+      clearTimeout(toastTimer);
+      $('toastTitle').textContent = `已删除“${step.title}”`;
+      $('toastSubtitle').textContent = 'DOCX 已更新，可在 24 小时内恢复';
+      $('toast').classList.add('open');
+      $('toastProgress').style.transition = 'none';
+      $('toastProgress').style.transform = 'scaleX(1)';
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        $('toastProgress').style.transition = 'transform 12s linear';
+        $('toastProgress').style.transform = 'scaleX(0)';
+      }));
+      toastTimer = window.setTimeout(hideToast, 12000);
+    }
+
+    function hideToast() {
+      clearTimeout(toastTimer);
+      $('toast').classList.remove('open');
+    }
+
+    function renderDeleted() {
+      $('deletedCount').hidden = deleted.length === 0;
+      $('deletedCount').textContent = String(deleted.length);
+      $('deletedList').innerHTML = deleted.length ? deleted.map(step => `
+        <div class="deleted-item">
+          <div><strong>${escapeHtml(step.code)} · ${escapeHtml(step.title)}</strong><span>刚刚删除 · 保留 24 小时<br>原位置：第 ${step.originalIndex + 1} 道工序</span></div>
+          <button class="restore-button" type="button" data-drawer-restore="${step.id}">恢复</button>
+        </div>`).join('') : '<div class="empty-state">没有最近删除的工序</div>';
+      $('deletedList').querySelectorAll('[data-drawer-restore]').forEach(button => button.addEventListener('click', () => restoreStep(Number(button.dataset.drawerRestore))));
+    }
+
+    function updateMeta() {
+      const text = `HDMI-DRAFT-001 · v1 · draft · ${steps.length} 个节点`;
+      $('routeSummary').textContent = text;
+      $('routeMeta').textContent = `v1 · draft · ${steps.length} 个节点`;
+    }
+
+    function setDocumentChanged(action) {
+      const token = Math.random().toString(16).slice(2, 18).padEnd(16, '0').slice(0, 16);
+      $('fingerprint').textContent = token;
+      $('docStatus').innerHTML = '<span class="status-dot"></span><span>DOCX 已重新生成</span>';
+      $('auditText').textContent = `最近操作：${action}`;
+      window.setTimeout(() => {
+        $('docStatus').innerHTML = '<span class="status-dot"></span><span>DOCX 当前版本</span>';
+      }, 2200);
+    }
+
+    function openDrawer() { $('drawerBackdrop').classList.add('open'); }
+    function closeDrawer() { $('drawerBackdrop').classList.remove('open'); }
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    }
+
+    $('cancelDelete').addEventListener('click', closeDeleteModal);
+    $('confirmDelete').addEventListener('click', deleteStep);
+    $('modalBackdrop').addEventListener('click', event => { if (event.target === $('modalBackdrop')) closeDeleteModal(); });
+    $('undoButton').addEventListener('click', () => lastDeletedId && restoreStep(lastDeletedId));
+    $('recentButton').addEventListener('click', openDrawer);
+    $('closeDrawer').addEventListener('click', closeDrawer);
+    $('drawerBackdrop').addEventListener('click', event => { if (event.target === $('drawerBackdrop')) closeDrawer(); });
+    $('tweaksTrigger').addEventListener('click', () => $('tweaks').classList.toggle('open'));
+    $('closeTweaks').addEventListener('click', () => $('tweaks').classList.remove('open'));
+    document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
+      mode = button.dataset.mode;
+      document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item === button));
+      $('tweaks').classList.remove('open');
+      hideToast();
+      renderFlow();
+      if (mode === 'drawer' && deleted.length) openDrawer();
+      if (mode === 'toast' && lastDeletedId) {
+        const step = deleted.find(item => item.id === lastDeletedId);
+        if (step) showUndoToast(step);
+      }
+    }));
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { closeDeleteModal(); closeDrawer(); $('tweaks').classList.remove('open'); }
+    });
+
+    renderFlow();
+    renderDetails();
+    renderDeleted();
+  </script>
+</body>
+</html>

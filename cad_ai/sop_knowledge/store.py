@@ -49,6 +49,16 @@ SECTION_DECISION_ENTITY = {
     "ie_timing": "ie_time",
     "release_signoff": "signoff",
 }
+ROUTE_REFERENCE_FILE_TYPES: dict[str, tuple[str, bytes | None]] = {
+    "application/pdf": (".pdf", b"%PDF-"),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (".docx", b"PK\x03\x04"),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (".xlsx", b"PK\x03\x04"),
+    "text/csv": (".csv", None),
+    "text/plain": (".txt", None),
+    "image/png": (".png", b"\x89PNG\r\n\x1a\n"),
+    "image/jpeg": (".jpg", b"\xff\xd8"),
+}
+ROUTE_REFERENCE_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 
 def utcnow() -> str:
@@ -398,6 +408,7 @@ class SopKnowledgeStore:
                 title=step["title"],
                 action=step["action"],
                 why=step["why"],
+                work_image_slots=int(step.get("work_image_slots") or 6),
                 inputs=step["input_json"],
                 materials=step["material_json"],
                 tool_equipment=step["tool_equipment_json"],
@@ -454,11 +465,11 @@ class SopKnowledgeStore:
     def _insert_step(self, connection: sqlite3.Connection, route_id: int, step: RouteStepDraft, parent_step_id: int | None) -> int:
         now = utcnow()
         cursor = connection.execute(
-            """INSERT INTO route_step(route_id,parent_step_id,sequence_no,step_code,title,action,why,input_json,material_json,
+            """INSERT INTO route_step(route_id,parent_step_id,sequence_no,step_code,title,action,why,work_image_slots,input_json,material_json,
                    tool_equipment_json,fixture_json,parameter_json,method_json,quality_check_json,acceptance_criteria_json,
                    safety_json,record_output_json,exception_json,unknowns_json,review_state,reviewer_comment,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (route_id, parent_step_id, step.sequence_no, step.step_code, step.title, step.action, step.why,
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (route_id, parent_step_id, step.sequence_no, step.step_code, step.title, step.action, step.why, step.work_image_slots,
              json.dumps(step.inputs, ensure_ascii=False), json.dumps(step.materials, ensure_ascii=False),
              json.dumps(step.tool_equipment, ensure_ascii=False), json.dumps(step.fixtures, ensure_ascii=False),
              json.dumps(step.parameters, ensure_ascii=False), json.dumps(step.method, ensure_ascii=False),
@@ -520,7 +531,19 @@ class SopKnowledgeStore:
             assets = [dict(row) for row in connection.execute(
                 "SELECT * FROM media_asset WHERE route_id=? ORDER BY created_at,id", (route_id,)
             )]
-            return {"route": dict(route), "steps": steps, "sections": sections, "provenance": provenance, "reuse_links": reuse, "media": media, "media_assets": assets}
+            reference_files = [dict(row) for row in connection.execute(
+                "SELECT * FROM route_reference_file WHERE route_id=? ORDER BY created_at,id", (route_id,)
+            )]
+            return {
+                "route": dict(route),
+                "steps": steps,
+                "sections": sections,
+                "provenance": provenance,
+                "reuse_links": reuse,
+                "media": media,
+                "media_assets": assets,
+                "reference_files": reference_files,
+            }
 
     def list_products(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -585,6 +608,79 @@ class SopKnowledgeStore:
                 (session_id, step_id, field_name, decision, json.dumps(old_value, ensure_ascii=False),
                  json.dumps(value, ensure_ascii=False), comment or f"field edited by {reviewer}", utcnow()),
             )
+
+    def set_step_work_image_slots(self, step_id: int, slot_count: int, *, reviewer: str) -> dict[str, Any]:
+        clean_reviewer = reviewer.strip()
+        if not clean_reviewer:
+            raise ValueError("worker identity is required")
+        if isinstance(slot_count, bool) or not 1 <= int(slot_count) <= 6:
+            raise ValueError("work image layout must contain 1 to 6 slots")
+        requested = int(slot_count)
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT step.*,route.status AS route_status
+                   FROM active_route_step AS step
+                   JOIN product_route AS route ON route.id=step.route_id
+                   WHERE step.id=?""",
+                (step_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(step_id)
+            self._require_mutable_route(connection, int(row["route_id"]), route=row)
+            confirmed_images = int(connection.execute(
+                "SELECT COUNT(*) FROM step_media WHERE route_step_id=? AND link_state='confirmed'",
+                (step_id,),
+            ).fetchone()[0])
+            if requested < confirmed_images:
+                raise ValueError(
+                    f"该工序已有 {confirmed_images} 张已确认图片；请先解除多余图片，或选择不少于 {confirmed_images} 格。"
+                )
+            previous = int(row["work_image_slots"] or 6)
+            page_number = self._active_step_page(connection, int(row["route_id"]), step_id)
+            if previous == requested:
+                return {
+                    "status": "unchanged",
+                    "changed": False,
+                    "route_id": int(row["route_id"]),
+                    "step_id": step_id,
+                    "step_title": str(row["title"]),
+                    "work_image_slots": requested,
+                    "affected_step_ids": [],
+                    "page_number": page_number,
+                }
+            now = utcnow()
+            connection.execute(
+                """UPDATE route_step
+                   SET work_image_slots=?,review_state='needs_revision',reviewer_comment=?,updated_at=?
+                   WHERE id=?""",
+                (requested, f"工图版式由 {previous} 格调整为 {requested} 格，待人工核对", now, step_id),
+            )
+            self._remove_step_knowledge(connection, [step_id])
+            session_id = self._active_review_session(
+                connection, int(row["route_id"]), clean_reviewer, "人工调整工图版式"
+            )
+            self._record_structure_decision(
+                connection,
+                session_id=session_id,
+                step_id=step_id,
+                field_name="work_image_slots",
+                old_value=previous,
+                new_value=requested,
+                comment=f"指导书工图版式由 {previous} 格调整为 {requested} 格",
+            )
+            connection.execute(
+                "UPDATE product_route SET updated_at=? WHERE id=?", (now, int(row["route_id"]))
+            )
+            return {
+                "status": "layout_updated",
+                "changed": True,
+                "route_id": int(row["route_id"]),
+                "step_id": step_id,
+                "step_title": str(row["title"]),
+                "work_image_slots": requested,
+                "affected_step_ids": [step_id],
+                "page_number": page_number,
+            }
 
     def create_nl_proposal(
         self,
@@ -974,7 +1070,7 @@ class SopKnowledgeStore:
             raise ValueError("worker identity is required")
         with self.connect() as connection:
             row = connection.execute(
-                """SELECT sm.id,sm.link_state,sm.route_step_id,rs.route_id,r.status
+                """SELECT sm.id,sm.link_state,sm.route_step_id,rs.route_id,rs.work_image_slots,r.status
                    FROM step_media sm
                    JOIN active_route_step rs ON rs.id=sm.route_step_id
                    JOIN product_route r ON r.id=rs.route_id
@@ -987,6 +1083,14 @@ class SopKnowledgeStore:
                 raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
             changed = row["link_state"] != "confirmed"
             if changed:
+                confirmed_count = int(connection.execute(
+                    "SELECT COUNT(*) FROM step_media WHERE route_step_id=? AND link_state='confirmed'",
+                    (int(row["route_step_id"]),),
+                ).fetchone()[0])
+                if confirmed_count >= int(row["work_image_slots"] or 6):
+                    raise ValueError(
+                        f"当前指导书只有 {int(row['work_image_slots'] or 6)} 个工图位置；请先扩大版式再确认图片。"
+                    )
                 connection.execute(
                     "UPDATE step_media SET link_state='confirmed',confirmed_by=?,confirmed_at=? WHERE id=?",
                     (reviewer.strip(), utcnow(), link_id),
@@ -1035,6 +1139,129 @@ class SopKnowledgeStore:
             "removed_links": link_count,
         }
 
+    def upload_route_reference_file(
+        self,
+        route_id: int,
+        *,
+        original_name: str,
+        mime_type: str,
+        data: bytes,
+        uploaded_by: str,
+        source_note: str = "",
+    ) -> dict[str, Any]:
+        if not uploaded_by.strip():
+            raise ValueError("worker identity is required")
+        suffix = self._validate_route_reference_file(original_name, mime_type, data)
+        with self.connect() as connection:
+            route = connection.execute("SELECT status FROM product_route WHERE id=?", (route_id,)).fetchone()
+            if not route:
+                raise KeyError(route_id)
+            if route["status"] == "approved":
+                raise sqlite3.IntegrityError("approved route reference files are immutable; create a revision")
+        digest = hashlib.sha256(data).hexdigest()
+        reference_root = self.path.parent / "sop_route_references"
+        reference_root.mkdir(parents=True, exist_ok=True)
+        target = reference_root / f"{digest}{suffix}"
+        if not target.exists():
+            target.write_bytes(data)
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO route_reference_file(
+                       route_id,original_name,storage_path,sha256,mime_type,size_bytes,source_note,
+                       review_state,uploaded_by,created_at
+                   ) VALUES(?,?,?,?,?,?,?,'needs_revision',?,?)
+                   ON CONFLICT(route_id,sha256) DO NOTHING""",
+                (
+                    route_id,
+                    Path(original_name).name,
+                    str(target.resolve()),
+                    digest,
+                    mime_type,
+                    len(data),
+                    source_note.strip(),
+                    uploaded_by.strip(),
+                    utcnow(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM route_reference_file WHERE route_id=? AND sha256=?", (route_id, digest)
+            ).fetchone()
+            return dict(row)
+
+    def get_route_reference_file(self, file_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM route_reference_file WHERE id=?", (file_id,)).fetchone()
+            if not row:
+                raise KeyError(file_id)
+            return dict(row)
+
+    def confirm_route_reference_file(self, file_id: int, *, reviewer: str) -> dict[str, Any]:
+        if not reviewer.strip():
+            raise ValueError("worker identity is required")
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT rf.*,r.status AS route_status
+                   FROM route_reference_file rf JOIN product_route r ON r.id=rf.route_id
+                   WHERE rf.id=?""",
+                (file_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(file_id)
+            if row["route_status"] == "approved":
+                raise sqlite3.IntegrityError("approved route reference files are immutable; create a revision")
+            changed = row["review_state"] != "confirmed"
+            if changed:
+                connection.execute(
+                    """UPDATE route_reference_file
+                       SET review_state='confirmed',confirmed_by=?,confirmed_at=? WHERE id=?""",
+                    (reviewer.strip(), utcnow(), file_id),
+                )
+            return {
+                "status": "confirmed" if changed else "already_confirmed",
+                "changed": changed,
+                "file_id": file_id,
+                "route_id": int(row["route_id"]),
+            }
+
+    def delete_route_reference_file(self, file_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT rf.*,r.status AS route_status
+                   FROM route_reference_file rf JOIN product_route r ON r.id=rf.route_id
+                   WHERE rf.id=?""",
+                (file_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(file_id)
+            if row["route_status"] == "approved":
+                raise sqlite3.IntegrityError("approved route reference files are immutable; create a revision")
+            storage_path = Path(row["storage_path"])
+            connection.execute("DELETE FROM route_reference_file WHERE id=?", (file_id,))
+            remaining_file_refs = int(connection.execute(
+                "SELECT COUNT(*) FROM route_reference_file WHERE storage_path=?", (str(storage_path),)
+            ).fetchone()[0])
+        if remaining_file_refs == 0 and storage_path.is_file():
+            storage_path.unlink()
+        return {"status": "deleted", "file_id": file_id, "route_id": int(row["route_id"])}
+
+    @staticmethod
+    def _validate_route_reference_file(original_name: str, mime_type: str, data: bytes) -> str:
+        file_type = ROUTE_REFERENCE_FILE_TYPES.get(mime_type)
+        if not file_type:
+            raise ValueError("路线资料仅支持 PDF、DOCX、XLSX、CSV、TXT、PNG 或 JPEG")
+        suffix, signature = file_type
+        supplied_suffix = Path(original_name).suffix.lower()
+        allowed_suffixes = {suffix}
+        if mime_type == "image/jpeg":
+            allowed_suffixes.add(".jpeg")
+        if supplied_suffix not in allowed_suffixes:
+            raise ValueError("文件扩展名与资料类型不一致")
+        if not data or len(data) > ROUTE_REFERENCE_FILE_MAX_BYTES:
+            raise ValueError("路线资料必须大于 0 且不超过 20MB")
+        if signature and not data.startswith(signature):
+            raise ValueError("路线资料文件签名无效")
+        return suffix
+
     def confirm_step(self, step_id: int, *, reviewer: str, comment: str = "") -> dict[str, Any]:
         if not reviewer.strip():
             raise ValueError("worker identity is required")
@@ -1050,6 +1277,14 @@ class SopKnowledgeStore:
                 raise KeyError(step_id)
             if row["route_status"] == "approved":
                 raise sqlite3.IntegrityError("approved route is immutable; create a new revision")
+            linked_images = int(connection.execute(
+                "SELECT COUNT(*) FROM step_media WHERE route_step_id=?",
+                (step_id,),
+            ).fetchone()[0])
+            if linked_images > int(row["work_image_slots"] or 6):
+                raise ValueError(
+                    f"当前工序绑定了 {linked_images} 张图片，但指导书只有 {int(row['work_image_slots'] or 6)} 个工图位置；请先扩大版式或解除多余图片。"
+                )
             now = utcnow()
             connection.execute("UPDATE route_step SET review_state='confirmed',reviewer_comment=?,updated_at=? WHERE id=?", (comment.strip() or "人工已核对本工序", now, step_id))
             connection.execute("UPDATE step_media SET link_state='confirmed',confirmed_by=?,confirmed_at=? WHERE route_step_id=? AND link_state='draft'", (reviewer.strip(), now, step_id))
@@ -1579,14 +1814,27 @@ class SopKnowledgeStore:
                 column: self._merge_json_lists(json.loads(target[column]), json.loads(source[column]))
                 for column in JSON_FIELDS.values()
             }
+            merged_media_ids = {
+                int(item[0]) for item in connection.execute(
+                    "SELECT media_asset_id FROM step_media WHERE route_step_id IN (?,?)",
+                    (target_step_id, int(source["id"])),
+                )
+            }
+            if len(merged_media_ids) > 6:
+                raise ValueError("合并后图片数量超过 6 张，请先解除多余图片关联")
+            merged_image_slots = max(
+                int(target["work_image_slots"] or 6),
+                int(source["work_image_slots"] or 6),
+                len(merged_media_ids),
+            )
             now = utcnow()
             connection.execute(
-                """UPDATE route_step SET title=?,action=?,why=?,input_json=?,material_json=?,tool_equipment_json=?,
+                """UPDATE route_step SET title=?,action=?,why=?,work_image_slots=?,input_json=?,material_json=?,tool_equipment_json=?,
                        fixture_json=?,parameter_json=?,method_json=?,quality_check_json=?,acceptance_criteria_json=?,
                        safety_json=?,record_output_json=?,exception_json=?,unknowns_json=?,review_state='needs_revision',
                        reviewer_comment=?,updated_at=? WHERE id=?""",
                 (
-                    scalar_values["title"], scalar_values["action"], scalar_values["why"],
+                    scalar_values["title"], scalar_values["action"], scalar_values["why"], merged_image_slots,
                     *(json.dumps(json_values[column], ensure_ascii=False) for column in JSON_FIELDS.values()),
                     "相邻工序已合并，字段冲突和上下游关系待人工核对", now, target_step_id,
                 ),
@@ -1887,7 +2135,7 @@ class SopKnowledgeStore:
             old_to_new: dict[int, int] = {}
             for step in snapshot["steps"]:
                 parent_new = old_to_new.get(step["parent_step_id"]) if step["parent_step_id"] else None
-                scalar_values = [step[key] for key in ("sequence_no", "step_code", "title", "action", "why")]
+                scalar_values = [step[key] for key in ("sequence_no", "step_code", "title", "action", "why", "work_image_slots")]
                 json_values = [
                     json.dumps(step[key], ensure_ascii=False)
                     for key in (
@@ -1897,8 +2145,8 @@ class SopKnowledgeStore:
                     )
                 ]
                 c = connection.execute(
-                    """INSERT INTO route_step(route_id,parent_step_id,sequence_no,step_code,title,action,why,input_json,material_json,tool_equipment_json,fixture_json,parameter_json,method_json,quality_check_json,acceptance_criteria_json,safety_json,record_output_json,exception_json,unknowns_json,review_state,reviewer_comment,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'unreviewed','',?,?)""",
+                    """INSERT INTO route_step(route_id,parent_step_id,sequence_no,step_code,title,action,why,work_image_slots,input_json,material_json,tool_equipment_json,fixture_json,parameter_json,method_json,quality_check_json,acceptance_criteria_json,safety_json,record_output_json,exception_json,unknowns_json,review_state,reviewer_comment,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'unreviewed','',?,?)""",
                     (new_route_id, parent_new, *scalar_values, *json_values, now, now),
                 )
                 old_to_new[step["id"]] = int(c.lastrowid)
@@ -1915,6 +2163,24 @@ class SopKnowledgeStore:
                         json.dumps(section["conflicts_json"], ensure_ascii=False),
                         json.dumps(section["unknowns_json"], ensure_ascii=False),
                         created_by, now, now,
+                    ),
+                )
+            for reference in snapshot.get("reference_files", []):
+                connection.execute(
+                    """INSERT INTO route_reference_file(
+                           route_id,original_name,storage_path,sha256,mime_type,size_bytes,source_note,
+                           review_state,uploaded_by,created_at
+                       ) VALUES(?,?,?,?,?,?,?,'needs_revision',?,?)""",
+                    (
+                        new_route_id,
+                        reference["original_name"],
+                        reference["storage_path"],
+                        reference["sha256"],
+                        reference["mime_type"],
+                        reference["size_bytes"],
+                        f"修订版来自路线 {approved_route_id}：{reference.get('source_note', '')}".strip(),
+                        created_by,
+                        now,
                     ),
                 )
             return new_route_id

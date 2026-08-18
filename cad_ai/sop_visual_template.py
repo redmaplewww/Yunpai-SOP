@@ -208,7 +208,9 @@ def build_work_instruction_page(
     version: str = "E",
     page_no: int = 1,
     page_total: int = 41,
+    work_image_slots: int = 6,
 ) -> dict[str, Any]:
+    slot_count = _normalize_work_image_slots(work_image_slots)
     step_slots = [
         {
             "slot_no": index,
@@ -216,7 +218,7 @@ def build_work_instruction_page(
             "image_label": "图片占位",
             "text_placeholder": f"{index}. 由 agent 填写作业描述、关键尺寸、检查要点。",
         }
-        for index in REFERENCE_80806_129_FORMAT["work_instruction_page"]["step_sequence"]
+        for index in range(1, slot_count + 1)
     ]
     return {
         "page_type": "work_instruction",
@@ -231,6 +233,7 @@ def build_work_instruction_page(
         "version": version,
         "page_no": page_no,
         "page_total": page_total,
+        "work_image_slots": slot_count,
         "header_fields": list(REFERENCE_80806_129_FORMAT["work_instruction_page"]["header_fields"]),
         "operation_order": "①准备物料==②设定尺寸==③裁线==④自检品质==⑤作业完成",
         "step_slots": step_slots,
@@ -244,6 +247,104 @@ def build_work_instruction_page(
             for title in REFERENCE_80806_129_FORMAT["work_instruction_page"]["bottom_sections"]
         ],
     }
+
+
+def _normalize_work_image_slots(value: Any) -> int:
+    try:
+        slot_count = int(value)
+    except (TypeError, ValueError):
+        slot_count = 6
+    if slot_count < 1 or slot_count > 6:
+        raise ValueError("work image layout must contain 1 to 6 slots")
+    return slot_count
+
+
+def _work_image_layout(slot_count: int) -> list[dict[str, int]]:
+    count = _normalize_work_image_slots(slot_count)
+    layouts: dict[int, list[tuple[int, int, int, int, int, int]]] = {
+        1: [(1, 0, 4, 1, 6, 5)],
+        2: [(1, 0, 4, 1, 3, 5), (2, 0, 4, 4, 6, 5)],
+        3: [(1, 0, 4, 1, 2, 5), (2, 0, 4, 3, 4, 5), (3, 0, 4, 5, 6, 5)],
+        4: [
+            (1, 0, 1, 1, 3, 2), (2, 0, 1, 4, 6, 2),
+            (4, 3, 4, 1, 3, 5), (3, 3, 4, 4, 6, 5),
+        ],
+        5: [
+            (1, 0, 1, 1, 2, 2), (2, 0, 1, 3, 4, 2), (3, 0, 1, 5, 6, 2),
+            (5, 3, 4, 1, 3, 5), (4, 3, 4, 4, 6, 5),
+        ],
+        6: [
+            (1, 0, 1, 1, 2, 2), (2, 0, 1, 3, 4, 2), (3, 0, 1, 5, 6, 2),
+            (6, 3, 4, 1, 2, 5), (5, 3, 4, 3, 4, 5), (4, 3, 4, 5, 6, 5),
+        ],
+    }
+    return [
+        {
+            "slot_no": slot_no,
+            "image_row_start": image_row_start,
+            "image_row_end": image_row_end,
+            "column_start": column_start,
+            "column_end": column_end,
+            "caption_row": caption_row,
+        }
+        for slot_no, image_row_start, image_row_end, column_start, column_end, caption_row
+        in layouts[count]
+    ]
+
+
+def _work_image_caption_line_count(step_slots: list[dict[str, Any]]) -> int:
+    return max(
+        (
+            len(
+                [
+                    line
+                    for line in _clean_step_text(str(slot.get("text_placeholder") or "")).splitlines()
+                    if line.strip()
+                ]
+            )
+            for slot in step_slots
+        ),
+        default=1,
+    )
+
+
+def _work_image_body_row_heights(slot_count: int, caption_line_count: int = 1) -> list[int]:
+    count = _normalize_work_image_slots(slot_count)
+    caption_height = min(1800, 600 + max(0, int(caption_line_count) - 1) * 400)
+    if count <= 3:
+        image_height = {1: 660, 2: 690, 3: 720}[count]
+        return [image_height] * 5 + [caption_height]
+    image_height = {4: 780, 5: 820, 6: 850}[count]
+    return [
+        image_height,
+        image_height,
+        caption_height,
+        image_height,
+        image_height,
+        caption_height,
+    ]
+
+
+def _work_image_font_sizes(slot_count: int) -> dict[str, float]:
+    count = _normalize_work_image_slots(slot_count)
+    return {
+        "caption": {1: 10.5, 2: 9.5, 3: 8.5, 4: 8.0, 5: 7.5, 6: 7.0}[count],
+        "placeholder": {1: 16.0, 2: 14.0, 3: 13.0, 4: 12.0, 5: 11.0, 6: 10.0}[count],
+        "side": {1: 8.0, 2: 8.0, 3: 7.5, 4: 7.0, 5: 6.5, 6: 6.0}[count],
+        "ie": {1: 8.0, 2: 7.5, 3: 7.0, 4: 6.5, 5: 6.0, 6: 6.0}[count],
+    }
+
+
+def _work_image_order_label(slot_count: int) -> str:
+    count = _normalize_work_image_slots(slot_count)
+    return {
+        1: "1",
+        2: "1,2",
+        3: "1,2,3",
+        4: "1,2 / 4,3",
+        5: "1,2,3 / 5,4",
+        6: "1,2,3 / 6,5,4",
+    }[count]
 
 
 def build_usb_cable_packaging_demo() -> dict[str, Any]:
@@ -1037,33 +1138,56 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
     _set_word_cell(header.cell(2, 4), "作业顺序", shaded=True, bold=True)
     _set_word_cell(header.cell(2, 5).merge(header.cell(2, 7)), str(page.get("operation_order") or ""), align=WD_ALIGN_PARAGRAPH.LEFT)
 
-    body = document.add_table(rows=6, cols=5)
+    slot_count = _normalize_work_image_slots(
+        page.get("work_image_slots") or len(page.get("step_slots") or []) or 6
+    )
+    layout = _work_image_layout(slot_count)
+    font_sizes = _work_image_font_sizes(slot_count)
+    body = document.add_table(rows=6, cols=8)
     body.alignment = WD_TABLE_ALIGNMENT.CENTER
     body.autofit = False
     _set_table_borders(body)
-    for row_index in [0, 1, 3, 4]:
-        _set_row_height(body.rows[row_index], 1000)
-    for row_index in [2, 5]:
-        _set_row_height(body.rows[row_index], 580)
+    step_by_slot = {int(slot.get("slot_no")): slot for slot in page.get("step_slots", [])}
+    caption_line_count = _work_image_caption_line_count(list(step_by_slot.values()))
+    for row, height in zip(
+        body.rows,
+        _work_image_body_row_heights(slot_count, caption_line_count),
+    ):
+        _set_row_height(row, height)
+    column_widths = [1.45, 3.45, 3.45, 3.45, 3.45, 3.45, 3.45, 5.55]
+    for row in body.rows:
+        for column, width in enumerate(column_widths):
+            _set_word_cell_width(row.cells[column], width)
 
     left_label = body.cell(0, 0).merge(body.cell(5, 0))
     _set_word_cell(left_label, "图片流程描述及说明", bold=True, size=12)
     _set_word_cell_text_direction(left_label, "tbRl")
 
-    step_by_slot = {int(slot.get("slot_no")): slot for slot in page.get("step_slots", [])}
-    for column_offset, slot_no in enumerate([1, 2, 3], start=1):
-        image_cell = body.cell(0, column_offset).merge(body.cell(1, column_offset))
-        _fill_word_step_cells(image_cell, body.cell(2, column_offset), step_by_slot.get(slot_no), slot_no)
-    for column_offset, slot_no in enumerate([6, 5, 4], start=1):
-        image_cell = body.cell(3, column_offset).merge(body.cell(4, column_offset))
-        _fill_word_step_cells(image_cell, body.cell(5, column_offset), step_by_slot.get(slot_no), slot_no)
+    for item in layout:
+        image_cell = body.cell(item["image_row_start"], item["column_start"]).merge(
+            body.cell(item["image_row_end"], item["column_end"])
+        )
+        text_cell = body.cell(item["caption_row"], item["column_start"]).merge(
+            body.cell(item["caption_row"], item["column_end"])
+        )
+        column_span = item["column_end"] - item["column_start"] + 1
+        _fill_word_step_cells(
+            image_cell,
+            text_cell,
+            step_by_slot.get(item["slot_no"]),
+            item["slot_no"],
+            image_width_cm=column_span * 3.45 - 0.5,
+            image_height_cm=4.5 if slot_count <= 3 else 2.25,
+            placeholder_size=font_sizes["placeholder"],
+            caption_size=font_sizes["caption"],
+        )
 
     for row_index, section in enumerate(page.get("side_sections", [])):
         lines = [str(line) for line in section.get("lines", [])]
         section_text = str(section.get("title") or "")
         if lines:
             section_text = section_text + "\n" + "\n".join(lines)
-        _set_word_cell(body.cell(row_index, 4), section_text, size=7, align=WD_ALIGN_PARAGRAPH.LEFT)
+        _set_word_cell(body.cell(row_index, 7), section_text, size=font_sizes["side"], align=WD_ALIGN_PARAGRAPH.LEFT)
 
     _render_ie_time_study_word_table(document, page, scope="work_instruction")
 
@@ -1084,19 +1208,47 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
     _set_word_cell(footer.cell(1, 5), _bottom_value(page, "图号") or str(page.get("drawing_no") or ""), align=WD_ALIGN_PARAGRAPH.LEFT)
 
 
-def _fill_word_step_cells(image_cell: Any, text_cell: Any, slot: dict[str, Any] | None, slot_no: int) -> None:
+def _fill_word_step_cells(
+    image_cell: Any,
+    text_cell: Any,
+    slot: dict[str, Any] | None,
+    slot_no: int,
+    *,
+    image_width_cm: float = 4.7,
+    image_height_cm: float = 2.15,
+    placeholder_size: float = 12,
+    caption_size: float = 7,
+) -> None:
     slot = slot or {"slot_no": slot_no, "image_label": "图片占位", "text_placeholder": ""}
     step_text = _clean_step_text(str(slot.get("text_placeholder") or ""))
     image_path = Path(str(slot.get("image_path") or ""))
     if image_path.is_file():
-        _fill_word_image_cell(image_cell, image_path, slot_no)
+        _fill_word_image_cell(
+            image_cell,
+            image_path,
+            slot_no,
+            max_width_cm=image_width_cm,
+            max_height_cm=image_height_cm,
+        )
     else:
         image_text = _slot_image_cell(slot)
-        _set_word_cell(image_cell, f"{slot_no}\n{image_text}", bold=True, size=12, color="D40000")
-    _set_word_cell(text_cell, f"{slot_no}. {step_text}" if step_text else f"{slot_no}. ", align=WD_ALIGN_PARAGRAPH.LEFT)
+        _set_word_cell(image_cell, f"{slot_no}\n{image_text}", bold=True, size=placeholder_size, color="D40000")
+    _set_word_cell(
+        text_cell,
+        f"{slot_no}. {step_text}" if step_text else f"{slot_no}. ",
+        size=caption_size,
+        align=WD_ALIGN_PARAGRAPH.LEFT,
+    )
 
 
-def _fill_word_image_cell(cell: Any, image_path: Path, slot_no: int) -> None:
+def _fill_word_image_cell(
+    cell: Any,
+    image_path: Path,
+    slot_no: int,
+    *,
+    max_width_cm: float = 4.7,
+    max_height_cm: float = 2.15,
+) -> None:
     from PIL import Image
 
     _clear_word_cell(cell)
@@ -1114,7 +1266,6 @@ def _fill_word_image_cell(cell: Any, image_path: Path, slot_no: int) -> None:
     picture.paragraph_format.space_after = Pt(0)
     with Image.open(image_path) as source:
         width_px, height_px = source.size
-    max_width_cm, max_height_cm = 4.7, 2.15
     scale = min(max_width_cm / max(width_px, 1), max_height_cm / max(height_px, 1))
     picture.add_run().add_picture(
         str(image_path), width=Cm(max(width_px * scale, 0.25)), height=Cm(max(height_px * scale, 0.25))
@@ -1151,11 +1302,17 @@ def _render_ie_time_study_word_table(document: Any, page: dict[str, Any], *, sco
     title_cell = table.cell(0, 0).merge(table.cell(0, len(fields) - 1))
     title = str(ie_time_study.get("title") or "IE工时记录")
     _set_word_cell(title_cell, f"{title}（随生产实绩动态调整）", bold=True, size=8, shaded=True)
+    content_size = 6.0
+    if scope == "work_instruction":
+        slot_count = _normalize_work_image_slots(
+            page.get("work_image_slots") or len(page.get("step_slots") or []) or 6
+        )
+        content_size = _work_image_font_sizes(slot_count)["ie"]
     for col_index, field in enumerate(fields):
-        _set_word_cell(table.cell(1, col_index), str(field), bold=True, size=6, shaded=True)
+        _set_word_cell(table.cell(1, col_index), str(field), bold=True, size=content_size, shaded=True)
     for row_index, row in enumerate(rows, start=2):
         for col_index, field in enumerate(fields):
-            _set_word_cell(table.cell(row_index, col_index), str(row.get(field, "")), size=6, align=WD_ALIGN_PARAGRAPH.CENTER)
+            _set_word_cell(table.cell(row_index, col_index), str(row.get(field, "")), size=content_size, align=WD_ALIGN_PARAGRAPH.CENTER)
 
 
 def _write_word_manifest(path: Path, document_name: str, demo: dict[str, Any] | None) -> None:
@@ -1824,38 +1981,71 @@ def _work_header_svg(page: dict[str, Any]) -> list[str]:
 
 def _work_step_grid_svg(page: dict[str, Any]) -> list[str]:
     lines: list[str] = []
-    left_x = 48
-    top_y = 98
-    slot_w = 160
-    slot_h = 203
-    positions = [
-        (left_x, top_y),
-        (left_x + slot_w + 20, top_y),
-        (left_x + (slot_w + 20) * 2, top_y),
-        (left_x + (slot_w + 20) * 2, top_y + slot_h + 24),
-        (left_x + slot_w + 20, top_y + slot_h + 24),
-        (left_x, top_y + slot_h + 24),
-    ]
-    for slot, (x, y) in zip(page.get("step_slots", []), positions):
+    slot_count = _normalize_work_image_slots(
+        page.get("work_image_slots") or len(page.get("step_slots") or []) or 6
+    )
+    row_orders = {
+        1: [[1]],
+        2: [[1, 2]],
+        3: [[1, 2, 3]],
+        4: [[1, 2], [4, 3]],
+        5: [[1, 2, 3], [5, 4]],
+        6: [[1, 2, 3], [6, 5, 4]],
+    }[slot_count]
+    left_x, top_y, area_width, area_height, gap = 48.0, 98.0, 504.0, 434.0, 12.0
+    row_height = (area_height - gap * (len(row_orders) - 1)) / len(row_orders)
+    positions: dict[int, tuple[float, float, float, float]] = {}
+    for row_index, row_slots in enumerate(row_orders):
+        slot_width = (area_width - gap * (len(row_slots) - 1)) / len(row_slots)
+        y = top_y + row_index * (row_height + gap)
+        for column_index, slot_no in enumerate(row_slots):
+            x = left_x + column_index * (slot_width + gap)
+            positions[slot_no] = (x, y, slot_width, row_height)
+
+    font_sizes = _work_image_font_sizes(slot_count)
+    slot_by_number = {int(slot.get("slot_no") or 0): slot for slot in page.get("step_slots", [])}
+    for slot_no in range(1, slot_count + 1):
+        slot = slot_by_number.get(slot_no, {"slot_no": slot_no, "image_label": "图片占位"})
+        x, y, slot_w, slot_h = positions[slot_no]
+        image_height = max(72.0, slot_h * (0.72 if slot_count <= 3 else 0.66))
         lines.append(f'<rect x="{x}" y="{y}" width="{slot_w}" height="{slot_h}" fill="#fff" stroke="#111" stroke-width="1"/>')
-        lines.append(f'<rect x="{x + 4}" y="{y + 4}" width="{slot_w - 8}" height="132" fill="#f5f6f7" stroke="#888" stroke-width="0.6"/>')
+        lines.append(f'<rect x="{x + 4}" y="{y + 4}" width="{slot_w - 8}" height="{image_height - 8}" fill="#f5f6f7" stroke="#888" stroke-width="0.6"/>')
         if slot.get("visual"):
-            lines.append(_step_visual_svg(slot["visual"], x + 4, y + 4, slot_w - 8, 132))
+            lines.append(_step_visual_svg(slot["visual"], x + 4, y + 4, slot_w - 8, image_height - 8))
         else:
-            lines.append(f'<text x="{x + slot_w / 2:.1f}" y="{y + 75:.1f}" font-size="16" text-anchor="middle" fill="#9a9a9a" font-family="SimSun, Microsoft YaHei, Arial">{escape(slot.get("image_label", "图片占位"))}</text>')
+            lines.append(f'<text x="{x + slot_w / 2:.1f}" y="{y + image_height / 2 + 5:.1f}" font-size="{font_sizes["placeholder"]}" text-anchor="middle" fill="#9a9a9a" font-family="SimSun, Microsoft YaHei, Arial">{escape(slot.get("image_label", "图片占位"))}</text>')
         lines.append(f'<circle cx="{x + 18}" cy="{y + 18}" r="12" fill="none" stroke="#ff0000" stroke-width="1.4"/>')
         lines.append(f'<text x="{x + 14}" y="{y + 23}" font-size="16" fill="#ff0000" font-family="Arial">{slot.get("slot_no")}</text>')
-        lines.append(f'<line x1="{x}" y1="{y + 140}" x2="{x + slot_w}" y2="{y + 140}" stroke="#111" stroke-width="1"/>')
-        _append_wrapped_text(lines, str(slot.get("text_placeholder", "")), x + 6, y + 156, slot_w - 12, 10)
-    arrow_pairs = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
-    centers = [(x + slot_w / 2, y + slot_h / 2) for x, y in positions]
-    for start, end in arrow_pairs:
-        x1, y1 = centers[start - 1]
-        x2, y2 = centers[end - 1]
-        if start == 3:
-            lines.append(f'<line x1="{x1:.1f}" y1="{y1 + 96:.1f}" x2="{x2:.1f}" y2="{y2 - 96:.1f}" stroke="#d40000" stroke-width="2.2" marker-end="url(#arrow)"/>')
+        lines.append(f'<line x1="{x}" y1="{y + image_height}" x2="{x + slot_w}" y2="{y + image_height}" stroke="#111" stroke-width="1"/>')
+        text_size = max(9, int(round(font_sizes["caption"])))
+        _append_wrapped_text(
+            lines,
+            str(slot.get("text_placeholder", "")),
+            x + 6,
+            y + image_height + text_size + 5,
+            slot_w - 12,
+            text_size,
+        )
+    for start in range(1, slot_count):
+        end = start + 1
+        x1, y1, width1, height1 = positions[start]
+        x2, y2, width2, height2 = positions[end]
+        center1 = (x1 + width1 / 2, y1 + height1 / 2)
+        center2 = (x2 + width2 / 2, y2 + height2 / 2)
+        dx, dy = center2[0] - center1[0], center2[1] - center1[1]
+        if abs(dx) >= abs(dy):
+            direction = 1 if dx > 0 else -1
+            start_point = (center1[0] + direction * (width1 / 2 - 3), center1[1])
+            end_point = (center2[0] - direction * (width2 / 2 - 3), center2[1])
         else:
-            lines.append(f'<line x1="{x1 + (slot_w / 2 - 3 if x2 > x1 else -slot_w / 2 + 3):.1f}" y1="{y1:.1f}" x2="{x2 + (-slot_w / 2 + 3 if x2 > x1 else slot_w / 2 - 3):.1f}" y2="{y2:.1f}" stroke="#d40000" stroke-width="2.2" marker-end="url(#arrow)"/>')
+            direction = 1 if dy > 0 else -1
+            start_point = (center1[0], center1[1] + direction * (height1 / 2 - 3))
+            end_point = (center2[0], center2[1] - direction * (height2 / 2 - 3))
+        lines.append(
+            f'<line x1="{start_point[0]:.1f}" y1="{start_point[1]:.1f}" '
+            f'x2="{end_point[0]:.1f}" y2="{end_point[1]:.1f}" '
+            'stroke="#d40000" stroke-width="2.2" marker-end="url(#arrow)"/>'
+        )
     return lines
 
 

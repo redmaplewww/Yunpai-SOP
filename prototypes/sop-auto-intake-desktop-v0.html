@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SOP 自动建档台 v0</title>
+  <style>
+    :root {
+      --canvas: #e9e7e2;
+      --paper: #ffffff;
+      --surface: #f8f7f4;
+      --surface-strong: #f0efeb;
+      --ink: #202124;
+      --muted: #686d73;
+      --line: #d5d2cc;
+      --line-strong: #bfc4cc;
+      --blue: #2459c4;
+      --blue-dark: #1748ae;
+      --blue-soft: #edf3ff;
+      --green: #2f7549;
+      --green-soft: #edf7f0;
+      --yellow: #fff3c4;
+      --yellow-ink: #6c5107;
+      --red: #a53c32;
+      --shadow: 0 10px 28px rgba(31, 35, 40, .10);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-width: 1160px; min-height: 720px; height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    button, textarea, input { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button, .upload-zone, textarea { transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease; }
+    button:active { transform: translateY(1px); }
+    button:focus-visible, textarea:focus-visible, input:focus-visible, .upload-zone:focus-visible {
+      outline: 3px solid rgba(36, 89, 196, .20);
+      outline-offset: 2px;
+    }
+
+    .topbar {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: #f9f8f5;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 260px; }
+    .wordmark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      color: #fff;
+      background: var(--blue);
+      font: 800 18px Georgia, serif;
+    }
+    .brand b { display: block; font-size: 15px; }
+    .brand small { display: block; margin-top: 1px; color: var(--muted); font-size: 11px; }
+    .prototype-note {
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 9px;
+      border: 1px solid #d8c987;
+      border-radius: 6px;
+      color: #66510c;
+      background: #fff8dd;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .top-spacer { flex: 1; }
+    .ai-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .ai-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .operator {
+      height: 36px;
+      width: 150px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    .app {
+      height: calc(100vh - 64px);
+      min-height: 656px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .page-head {
+      min-height: 84px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+    .page-title { min-width: 0; }
+    .page-title h1 { margin: 0; font-size: 22px; line-height: 1.25; }
+    .page-title p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .page-head-spacer { flex: 1; }
+    .sample-button, .plain-button, .primary-button {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-radius: 7px;
+      padding: 0 13px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .sample-button, .plain-button { border: 1px solid var(--line-strong); color: var(--ink); background: #fff; }
+    .sample-button:hover, .plain-button:hover { border-color: #8d97a3; background: #f4f5f6; }
+    .primary-button { border: 1px solid var(--blue); color: #fff; background: var(--blue); }
+    .primary-button:hover { background: var(--blue-dark); }
+    .primary-button:disabled { cursor: not-allowed; opacity: .48; transform: none; }
+
+    .stage-switch {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      height: 38px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+    }
+    .stage-switch button {
+      height: 30px;
+      min-width: 72px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 11px;
+    }
+    .stage-switch button:hover { color: var(--ink); background: var(--surface-strong); }
+    .stage-switch button.active { color: #234b97; background: #fff; box-shadow: 0 1px 4px rgba(30, 35, 40, .12); font-weight: 750; }
+
+    .stage { flex: 1; min-height: 0; }
+    .stage[hidden] { display: none; }
+
+    .intake-stage {
+      display: grid;
+      grid-template-columns: minmax(580px, 1.3fr) minmax(390px, .8fr);
+      min-height: 0;
+      background: var(--line);
+      gap: 1px;
+    }
+    .text-panel, .image-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--paper); }
+    .panel-head {
+      min-height: 62px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .step-number {
+      width: 32px;
+      height: 32px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      color: #234b97;
+      background: var(--blue-soft);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .panel-title { min-width: 0; }
+    .panel-title b { display: block; font-size: 14px; }
+    .panel-title span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .panel-count { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .text-wrap { flex: 1; min-height: 0; padding: 16px 18px 12px; }
+    .source-text {
+      width: 100%;
+      height: 100%;
+      min-height: 300px;
+      display: block;
+      resize: none;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      padding: 15px 16px;
+      color: var(--ink);
+      background: #fff;
+      font-size: 13px;
+      line-height: 1.75;
+    }
+    .source-text:hover { border-color: #9da5af; }
+    .source-text:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36, 89, 196, .09); outline: none; }
+    .text-foot { display: flex; align-items: center; padding: 0 18px 14px; color: var(--muted); font-size: 10px; }
+    .text-foot span:last-child { margin-left: auto; }
+
+    .image-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px 18px 12px; overflow: hidden; }
+    .upload-zone {
+      min-height: 112px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border: 1px dashed #9dadca;
+      border-radius: 7px;
+      color: #284d91;
+      background: #f8faff;
+      text-align: center;
+      cursor: pointer;
+    }
+    .upload-zone:hover, .upload-zone.dragging { border-color: var(--blue); background: var(--blue-soft); }
+    .upload-zone strong { display: block; font-size: 13px; }
+    .upload-zone span { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+    .upload-mark {
+      width: 28px;
+      height: 28px;
+      margin: 0 auto 8px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #9fb3df;
+      border-radius: 6px;
+      background: #fff;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .image-input { position: fixed; left: -9999px; }
+    .image-list {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-content: start;
+      gap: 9px;
+      margin-top: 12px;
+      overflow: auto;
+      scrollbar-gutter: stable;
+    }
+    .image-item {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+    }
+    .image-thumb { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: #e8ebef; }
+    .image-thumb img { width: 100%; height: 100%; display: block; object-fit: cover; }
+    .image-placeholder { width: 100%; height: 100%; display: grid; place-items: center; color: #7b828b; font-size: 10px; }
+    .image-placeholder::before {
+      content: "";
+      position: absolute;
+      width: 45%;
+      height: 26%;
+      border: 1px solid #aeb5bd;
+      border-radius: 4px;
+      background: #f3f5f7;
+      box-shadow: 14px 9px 0 #d9dde2;
+    }
+    .image-placeholder span { position: relative; z-index: 1; margin-top: 46px; }
+    .image-copy { padding: 7px 8px; }
+    .image-copy b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+    .image-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+    .image-remove {
+      position: absolute;
+      z-index: 2;
+      top: 5px;
+      right: 5px;
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, .9);
+      border-radius: 6px;
+      color: #fff;
+      background: rgba(28, 31, 36, .76);
+      font-size: 16px;
+      opacity: 0;
+    }
+    .image-item:hover .image-remove, .image-remove:focus-visible { opacity: 1; }
+    .image-remove:hover { background: var(--red); }
+
+    .actionbar {
+      min-height: 70px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 20px;
+      border-top: 1px solid var(--line);
+      background: #faf9f7;
+    }
+    .actionbar[hidden] { display: none; }
+    .action-summary { min-width: 0; }
+    .action-summary b { display: block; font-size: 12px; }
+    .action-summary span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .action-spacer { flex: 1; }
+    .generate-button { min-width: 188px; min-height: 42px; }
+    .inline-error { color: var(--red) !important; }
+
+    .processing-stage, .complete-stage { overflow: auto; background: var(--surface); }
+    .process-shell, .complete-shell { width: min(1160px, calc(100% - 48px)); margin: 22px auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: var(--shadow); }
+    .process-head, .complete-head { display: flex; align-items: center; gap: 16px; padding: 19px 22px; border-bottom: 1px solid var(--line); }
+    .process-head h2, .complete-head h2 { margin: 0; font-size: 18px; }
+    .process-head p, .complete-head p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+    .spinner {
+      width: 34px;
+      height: 34px;
+      flex: none;
+      border: 3px solid #dce4f5;
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin .85s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .process-percent { margin-left: auto; color: #234b97; font-size: 22px; font-weight: 800; }
+    .progress-track { height: 5px; overflow: hidden; background: #e2e5e9; }
+    .progress-value { height: 100%; width: 18%; background: var(--blue); transition: width .45s ease; }
+    .process-list { padding: 4px 22px 17px; }
+    .process-row { min-height: 58px; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 11px; border-bottom: 1px solid #eceae5; }
+    .process-row:last-child { border-bottom: 0; }
+    .process-mark { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; border: 1px solid #b9c0c9; color: #7b838d; font-size: 10px; font-weight: 800; }
+    .process-row.done .process-mark { border-color: var(--green); color: #fff; background: var(--green); }
+    .process-row.active .process-mark { border-color: var(--blue); color: var(--blue); background: var(--blue-soft); }
+    .process-copy b { display: block; font-size: 12px; }
+    .process-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .process-status { color: var(--muted); font-size: 10px; }
+    .process-row.done .process-status { color: var(--green); }
+    .process-row.active .process-status { color: var(--blue); font-weight: 700; }
+    .process-foot { min-height: 58px; display: flex; align-items: center; padding: 0 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; background: #faf9f7; }
+
+    .complete-mark { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 7px; color: #fff; background: var(--green); font-size: 18px; font-weight: 800; }
+    .draft-badge { margin-left: auto; padding: 5px 8px; border-radius: 6px; color: var(--yellow-ink); background: var(--yellow); font-size: 10px; font-weight: 800; }
+    .result-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 350px; }
+    .result-main { padding: 19px 22px 22px; }
+    .result-side { padding: 19px 20px; border-left: 1px solid var(--line); background: #fbfbfa; }
+    .section-label { margin-bottom: 11px; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .metric-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+    .metric { min-height: 84px; padding: 13px 14px; border-right: 1px solid var(--line); background: #fff; }
+    .metric:last-child { border-right: 0; }
+    .metric strong { display: block; font-size: 25px; line-height: 1; }
+    .metric span { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; }
+    .route-preview { margin-top: 18px; border-top: 1px solid var(--line); }
+    .route-row { min-height: 45px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid #eceae5; }
+    .route-no { color: #315aa8; font-size: 10px; font-weight: 800; }
+    .route-row b { font-size: 11px; }
+    .route-row span:last-child { color: var(--muted); font-size: 9px; }
+    .issue-list { display: grid; gap: 8px; }
+    .issue { padding: 10px 11px; border: 1px solid #dfca82; border-radius: 7px; color: var(--yellow-ink); background: #fff8df; font-size: 11px; line-height: 1.55; }
+    .issue b { display: block; margin-bottom: 3px; color: #564106; }
+    .complete-actions { min-height: 64px; display: flex; align-items: center; gap: 8px; padding: 11px 22px; border-top: 1px solid var(--line); background: #faf9f7; }
+    .complete-actions span { color: var(--muted); font-size: 10px; }
+    .complete-actions .plain-button { margin-left: auto; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="wordmark">W</div>
+      <div><b>SOP 自动建档台</b><small>文字与作业图片一次投递</small></div>
+    </div>
+    <span class="prototype-note">V0 演示，不写入正式项目</span>
+    <div class="top-spacer"></div>
+    <span class="ai-state">GPT 图文服务已连接</span>
+    <input class="operator" value="资料负责人" aria-label="负责人姓名或工号">
+  </header>
+
+  <main class="app">
+    <section class="page-head">
+      <div class="page-title">
+        <h1>建立新的 SOP 草稿</h1>
+        <p>把现有文字和作业图片放进来，系统会自动整理工序、图片和 IE 工时。</p>
+      </div>
+      <div class="page-head-spacer"></div>
+      <button id="sampleButton" class="sample-button" type="button">恢复演示内容</button>
+      <div class="stage-switch" role="tablist" aria-label="原型状态">
+        <button type="button" data-stage="intake" class="active">资料投递</button>
+        <button type="button" data-stage="processing">整理中</button>
+        <button type="button" data-stage="complete">整理完成</button>
+      </div>
+    </section>
+
+    <section id="intakeStage" class="stage intake-stage">
+      <div class="text-panel">
+        <div class="panel-head">
+          <span class="step-number">1</span>
+          <div class="panel-title"><b>粘贴全部项目文字</b><span>顺序可以不完整，系统会自动整理。</span></div>
+          <span id="charCount" class="panel-count">0 字</span>
+        </div>
+        <div class="text-wrap">
+          <textarea id="sourceText" class="source-text" aria-label="项目文字"></textarea>
+        </div>
+        <div class="text-foot"><span id="textHint">可以包含工序、作业要求、工艺参数和 IE 工时。</span><span>仅采用明确写出的生产信息</span></div>
+      </div>
+
+      <div class="image-panel">
+        <div class="panel-head">
+          <span class="step-number">2</span>
+          <div class="panel-title"><b>上传全部作业图片</b><span>不用提前分类，系统会自动匹配工序。</span></div>
+          <span id="imageCount" class="panel-count">0 张</span>
+        </div>
+        <div class="image-body">
+          <label id="uploadZone" class="upload-zone" for="imageInput" tabindex="0">
+            <span><i class="upload-mark">+</i><strong>拖入图片或点击选择</strong><span>支持 PNG、JPEG，可一次选择多张</span></span>
+          </label>
+          <input id="imageInput" class="image-input" type="file" accept="image/png,image/jpeg" multiple>
+          <div id="imageList" class="image-list" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="processingStage" class="stage processing-stage" hidden>
+      <div class="process-shell">
+        <div class="process-head">
+          <div class="spinner" aria-hidden="true"></div>
+          <div><h2>正在自动建立 SOP 草稿</h2><p>资料可以一次投递，图片会在后台分批分析。</p></div>
+          <span id="processPercent" class="process-percent">18%</span>
+        </div>
+        <div class="progress-track"><div id="progressValue" class="progress-value"></div></div>
+        <div id="processList" class="process-list"></div>
+        <div class="process-foot">处理完成前不会批准、发布或覆盖已有路线。</div>
+      </div>
+    </section>
+
+    <section id="completeStage" class="stage complete-stage" hidden>
+      <div class="complete-shell">
+        <div class="complete-head">
+          <div class="complete-mark">✓</div>
+          <div><h2>SOP 草稿已经整理完成</h2><p>正常内容已自动搭建，只留下需要人工判断的项目。</p></div>
+          <span class="draft-badge">草稿 · 待人工核对</span>
+        </div>
+        <div class="result-grid">
+          <div class="result-main">
+            <div class="section-label">演示整理结果</div>
+            <div class="metric-row">
+              <div class="metric"><strong>8</strong><span>已识别工序</span></div>
+              <div class="metric"><strong id="resultImageCount">6</strong><span>作业图片</span></div>
+              <div class="metric"><strong>5</strong><span>已提取工时</span></div>
+              <div class="metric"><strong>3</strong><span>待确认问题</span></div>
+            </div>
+            <div class="route-preview">
+              <div class="route-row"><span class="route-no">01</span><b>来料核对</b><span>2 张建议图片</span></div>
+              <div class="route-row"><span class="route-no">02</span><b>裁线与长度补偿</b><span>1 张建议图片</span></div>
+              <div class="route-row"><span class="route-no">03</span><b>剥皮与芯线整理</b><span>2 张建议图片</span></div>
+              <div class="route-row"><span class="route-no">04</span><b>端子焊接</b><span>1 张建议图片</span></div>
+              <div class="route-row"><span class="route-no">05–08</span><b>检验、包装与记录</b><span>文字已整理</span></div>
+            </div>
+          </div>
+          <aside class="result-side">
+            <div class="section-label">只需处理这些问题</div>
+            <div class="issue-list">
+              <div class="issue"><b>1 张图片无法确定工序</b>可能属于“剥皮”或“端子焊接”。</div>
+              <div class="issue"><b>电测工时出现两个数值</b>文字中同时出现 18 秒和 22 秒。</div>
+              <div class="issue"><b>包装工序缺少检查方法</b>系统保持空白，没有自动补写。</div>
+            </div>
+          </aside>
+        </div>
+        <div class="complete-actions">
+          <span>生成的 DOCX 仍然是草稿，图片确认后才进入正式指导书。</span>
+          <button id="backButton" class="plain-button" type="button">返回资料投递</button>
+          <button class="primary-button" type="button">查看待确认问题</button>
+        </div>
+      </div>
+    </section>
+
+    <footer id="actionbar" class="actionbar">
+      <div class="action-summary"><b id="readyTitle">资料已经放入</b><span id="readySummary">系统将按文字和图片自动建立草稿。</span></div>
+      <div class="action-spacer"></div>
+      <button id="clearButton" class="plain-button" type="button">清空</button>
+      <button id="generateButton" class="primary-button generate-button" type="button">开始整理并生成 SOP</button>
+    </footer>
+  </main>
+
+  <script>
+    const sampleText = `产品：HDMI 成品线试制项目\n\n先核对线材、端子和包装材料。裁线时按照工单长度处理，完成后剥皮并整理芯线，再焊接端子。焊接后检查是否有虚焊、连锡和芯线损伤。然后进行电测，合格后检查外观、贴标签并包装。\n\nIE 工时：来料核对 20 秒，裁线 35 秒，剥皮 42 秒，焊接 90 秒，电测 18 秒。电测异常时登记工单号和异常现象，交由负责人处理。`;
+    const sampleImages = ["来料核对.jpg", "裁线动作.jpg", "剥皮位置.jpg", "芯线整理.jpg", "端子焊接.jpg", "电测连接.jpg"];
+    const processRows = [
+      ["整理项目文字", "识别产品、工序、要求和工时"],
+      ["分析作业图片", "分批识别图片内容和建议工序"],
+      ["建立工艺路线", "整理工序顺序和路线章节"],
+      ["安排指导书图片", "建议图片位置和显示顺序"],
+      ["生成 DOCX 校样", "创建待人工核对的草稿文件"]
+    ];
+
+    const state = { files: [], samples: [], stage: "intake", processIndex: 0, timer: null };
+    const byId = id => document.getElementById(id);
+    const sourceText = byId("sourceText");
+    const imageInput = byId("imageInput");
+    const uploadZone = byId("uploadZone");
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+    }
+
+    function setStage(nextStage) {
+      state.stage = nextStage;
+      ["intake", "processing", "complete"].forEach(name => {
+        byId(`${name}Stage`).hidden = name !== nextStage;
+      });
+      byId("actionbar").hidden = nextStage !== "intake";
+      document.querySelectorAll("[data-stage]").forEach(button => button.classList.toggle("active", button.dataset.stage === nextStage));
+      if (nextStage !== "processing") stopProcessTimer();
+      if (nextStage === "processing") startProcessing(false);
+      if (nextStage === "complete") byId("resultImageCount").textContent = String(imageTotal());
+    }
+
+    function imageTotal() { return state.files.length + state.samples.length; }
+
+    function updateCounts() {
+      byId("charCount").textContent = `${sourceText.value.trim().length} 字`;
+      byId("imageCount").textContent = `${imageTotal()} 张`;
+      byId("resultImageCount").textContent = String(imageTotal());
+      const hasText = sourceText.value.trim().length > 0;
+      const hasImages = imageTotal() > 0;
+      byId("generateButton").disabled = !hasText;
+      byId("readyTitle").textContent = hasText ? "资料已经放入" : "请先粘贴项目文字";
+      byId("readySummary").textContent = hasText
+        ? hasImages ? `已准备 ${imageTotal()} 张作业图片，点击后自动建立草稿。` : "没有图片也可以先生成文字版草稿。"
+        : "图片可以稍后上传，至少需要一段项目文字。";
+      byId("textHint").classList.remove("inline-error");
+    }
+
+    function renderImages() {
+      const list = byId("imageList");
+      const sampleMarkup = state.samples.map((name, index) => `
+        <article class="image-item">
+          <button class="image-remove" type="button" data-remove-sample="${index}" aria-label="删除 ${escapeHtml(name)}">×</button>
+          <div class="image-thumb"><div class="image-placeholder"><span>演示图片</span></div></div>
+          <div class="image-copy"><b>${escapeHtml(name)}</b><span>等待 AI 匹配工序</span></div>
+        </article>`).join("");
+      const fileMarkup = state.files.map((item, index) => `
+        <article class="image-item">
+          <button class="image-remove" type="button" data-remove-file="${index}" aria-label="删除 ${escapeHtml(item.file.name)}">×</button>
+          <div class="image-thumb"><img src="${item.url}" alt="${escapeHtml(item.file.name)}"></div>
+          <div class="image-copy"><b>${escapeHtml(item.file.name)}</b><span>等待 AI 匹配工序</span></div>
+        </article>`).join("");
+      list.innerHTML = sampleMarkup + fileMarkup;
+      list.querySelectorAll("[data-remove-sample]").forEach(button => button.addEventListener("click", () => {
+        state.samples.splice(Number(button.dataset.removeSample), 1);
+        renderImages();
+      }));
+      list.querySelectorAll("[data-remove-file]").forEach(button => button.addEventListener("click", () => {
+        const index = Number(button.dataset.removeFile);
+        URL.revokeObjectURL(state.files[index].url);
+        state.files.splice(index, 1);
+        renderImages();
+      }));
+      updateCounts();
+    }
+
+    function addFiles(fileList) {
+      [...fileList].filter(file => ["image/png", "image/jpeg"].includes(file.type)).forEach(file => {
+        state.files.push({ file, url: URL.createObjectURL(file) });
+      });
+      renderImages();
+    }
+
+    function loadSample() {
+      state.files.forEach(item => URL.revokeObjectURL(item.url));
+      state.files = [];
+      state.samples = [...sampleImages];
+      sourceText.value = sampleText;
+      renderImages();
+      setStage("intake");
+    }
+
+    function clearAll() {
+      state.files.forEach(item => URL.revokeObjectURL(item.url));
+      state.files = [];
+      state.samples = [];
+      sourceText.value = "";
+      imageInput.value = "";
+      renderImages();
+      sourceText.focus();
+    }
+
+    function renderProcessRows() {
+      byId("processList").innerHTML = processRows.map((row, index) => {
+        const status = index < state.processIndex ? "done" : index === state.processIndex ? "active" : "";
+        const label = index < state.processIndex ? "已完成" : index === state.processIndex ? "处理中" : "等待";
+        const mark = index < state.processIndex ? "✓" : String(index + 1);
+        return `<div class="process-row ${status}"><span class="process-mark">${mark}</span><div class="process-copy"><b>${row[0]}</b><span>${row[1]}</span></div><span class="process-status">${label}</span></div>`;
+      }).join("");
+      const percent = Math.min(96, 18 + state.processIndex * 19);
+      byId("processPercent").textContent = `${percent}%`;
+      byId("progressValue").style.width = `${percent}%`;
+    }
+
+    function stopProcessTimer() {
+      if (state.timer) window.clearInterval(state.timer);
+      state.timer = null;
+    }
+
+    function startProcessing(autoFinish) {
+      stopProcessTimer();
+      state.processIndex = 0;
+      renderProcessRows();
+      state.timer = window.setInterval(() => {
+        state.processIndex += 1;
+        if (state.processIndex >= processRows.length) {
+          stopProcessTimer();
+          byId("processPercent").textContent = "100%";
+          byId("progressValue").style.width = "100%";
+          if (autoFinish) window.setTimeout(() => setStage("complete"), 420);
+          return;
+        }
+        renderProcessRows();
+      }, 650);
+    }
+
+    sourceText.addEventListener("input", updateCounts);
+    imageInput.addEventListener("change", event => addFiles(event.target.files));
+    uploadZone.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); imageInput.click(); }
+    });
+    ["dragenter", "dragover"].forEach(name => uploadZone.addEventListener(name, event => {
+      event.preventDefault();
+      uploadZone.classList.add("dragging");
+    }));
+    ["dragleave", "drop"].forEach(name => uploadZone.addEventListener(name, event => {
+      event.preventDefault();
+      uploadZone.classList.remove("dragging");
+    }));
+    uploadZone.addEventListener("drop", event => addFiles(event.dataTransfer.files));
+    byId("sampleButton").addEventListener("click", loadSample);
+    byId("clearButton").addEventListener("click", clearAll);
+    byId("generateButton").addEventListener("click", () => {
+      if (!sourceText.value.trim()) {
+        byId("textHint").textContent = "请先粘贴项目文字。";
+        byId("textHint").classList.add("inline-error");
+        sourceText.focus();
+        return;
+      }
+      setStage("processing");
+      startProcessing(true);
+    });
+    byId("backButton").addEventListener("click", () => setStage("intake"));
+    document.querySelectorAll("[data-stage]").forEach(button => button.addEventListener("click", () => setStage(button.dataset.stage)));
+
+    loadSample();
+  </script>
+</body>
+</html>

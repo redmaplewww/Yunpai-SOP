@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SOP 动态工图版式原型</title>
+  <style>
+    :root {
+      --canvas: #5e6268;
+      --surface: #f4f3f0;
+      --paper: #fff;
+      --ink: #17191c;
+      --muted: #666b72;
+      --line: #1f2226;
+      --soft-line: #c9ccd0;
+      --field: #ececed;
+      --blue: #2459c4;
+      --blue-soft: #edf3ff;
+      --green: #2f7549;
+      --red: #c1261d;
+      --shadow: 0 18px 46px rgba(15, 18, 22, .28);
+      --base-font: 12px;
+      --caption-font: 13px;
+      --side-font: 11px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; min-width: 1180px; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button { font: inherit; letter-spacing: 0; }
+    button:focus-visible { outline: 3px solid rgba(36, 89, 196, .24); outline-offset: 2px; }
+
+    .toolbar {
+      height: 70px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 0 22px;
+      border-bottom: 1px solid #d4d1cb;
+      background: #faf9f6;
+      box-shadow: 0 2px 10px rgba(15, 18, 22, .12);
+    }
+    .title-block { min-width: 290px; }
+    .title-block h1 { margin: 0; font-size: 17px; line-height: 1.2; }
+    .title-block p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+    .toolbar-spacer { flex: 1; }
+    .control-group { display: flex; align-items: center; gap: 9px; }
+    .control-label { color: #4f555d; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .segmented {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid #c5c8cc;
+      border-radius: 7px;
+      background: #efefed;
+    }
+    .segmented button {
+      min-width: 58px;
+      height: 32px;
+      border: 0;
+      border-radius: 5px;
+      color: #555b63;
+      background: transparent;
+      cursor: pointer;
+      transition: .15s ease;
+    }
+    .segmented button:hover { color: var(--ink); background: #e2e3e4; }
+    .segmented button.active { color: #1f4b9c; background: #fff; box-shadow: 0 1px 5px rgba(20, 25, 30, .14); font-weight: 800; }
+    #layoutControl button { min-width: 46px; }
+    .status-pill {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border: 1px solid #b9cbbb;
+      border-radius: 6px;
+      color: #285d3a;
+      background: #f1f8f3;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .status-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+
+    .workspace {
+      height: calc(100vh - 70px);
+      display: grid;
+      place-items: center;
+      overflow: auto;
+      padding: 22px 28px 34px;
+    }
+    .page-wrap { width: min(1180px, calc(100vw - 56px)); }
+    .page-meta {
+      min-height: 35px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #f2f3f4;
+      font-size: 11px;
+    }
+    .page-meta b { font-size: 12px; }
+    .page-meta span:last-child { margin-left: auto; color: #d7d9dc; }
+    .paper {
+      width: 100%;
+      aspect-ratio: 297 / 210;
+      min-height: 700px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid #2c2f33;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .header-grid {
+      flex: none;
+      display: grid;
+      grid-template-columns: 120px 1fr 122px;
+      grid-template-rows: 48px 38px 40px;
+      border-bottom: 1px solid var(--line);
+      font-size: var(--base-font);
+    }
+    .cell { min-width: 0; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 5px 7px; text-wrap: pretty; }
+    .header-grid > :nth-child(3n) { border-right: 0; }
+    .logo { color: #ed7d00; font: 800 17px Georgia, serif; }
+    .doc-title { font-family: SimSun, "Microsoft YaHei", serif; font-size: 22px; font-weight: 800; }
+    .page-number { font-size: 10px; line-height: 1.45; text-align: center; }
+    .meta-row { grid-column: 1 / -1; display: grid; grid-template-columns: 110px 1fr 105px 1fr 105px 1fr 105px 1fr; border-bottom: 1px solid var(--line); }
+    .meta-row:last-child { border-bottom: 0; }
+    .meta-row > span { min-width: 0; display: flex; align-items: center; justify-content: center; padding: 5px 7px; border-right: 1px solid var(--line); overflow: hidden; }
+    .meta-row > span:last-child { border-right: 0; justify-content: flex-start; }
+    .meta-label { background: var(--field); font-weight: 800; }
+    .meta-value { font-family: SimSun, "Microsoft YaHei", serif; }
+
+    .instruction-body {
+      flex: none;
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr) 230px;
+      height: var(--body-height);
+      border-bottom: 1px solid var(--line);
+      transition: height .22s ease;
+    }
+    .vertical-label {
+      display: grid;
+      place-items: center;
+      border-right: 1px solid var(--line);
+      font-family: SimSun, "Microsoft YaHei", serif;
+      font-size: 17px;
+      font-weight: 800;
+      writing-mode: vertical-rl;
+      letter-spacing: 2px;
+    }
+    .work-grid {
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      display: grid;
+      grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
+      grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+      overflow: hidden;
+      border-right: 1px solid var(--line);
+    }
+    .work-slot {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    .work-slot.last-column { border-right: 0; }
+    .work-slot.last-row { border-bottom: 0; }
+    .image-zone {
+      position: relative;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      padding: 10px;
+      background: #fff;
+    }
+    .slot-number {
+      position: absolute;
+      top: 8px;
+      left: 9px;
+      width: 27px;
+      height: 27px;
+      display: grid;
+      place-items: center;
+      border: 1.5px solid var(--red);
+      border-radius: 50%;
+      color: var(--red);
+      background: #fff;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .image-placeholder {
+      width: min(82%, 260px);
+      height: 70%;
+      min-height: 72px;
+      display: grid;
+      place-items: center;
+      border: 1px dashed #a9adb2;
+      color: #7b8087;
+      background: #f7f7f6;
+      font-size: var(--placeholder-font);
+      text-align: center;
+      line-height: 1.55;
+    }
+    .image-placeholder b { display: block; color: #565c63; font-size: 1.08em; }
+    .caption {
+      min-height: var(--caption-height);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 9px;
+      border-top: 1px solid var(--line);
+      font-size: var(--caption-font);
+      line-height: 1.42;
+      text-wrap: pretty;
+    }
+    .caption b { color: #17488f; flex: none; }
+
+    .side-sections { min-width: 0; min-height: 0; height: 100%; display: grid; grid-template-rows: repeat(6, minmax(0, 1fr)); overflow: hidden; }
+    .side-section { min-height: 0; padding: 7px 9px; border-bottom: 1px solid var(--line); overflow: hidden; font-size: var(--side-font); line-height: 1.45; text-wrap: pretty; }
+    .side-section:last-child { border-bottom: 0; }
+    .side-section b { display: block; margin-bottom: 3px; font-size: 1.03em; }
+    .side-section span { color: #4f545a; }
+
+    .ie-study {
+      flex: none;
+      min-height: 68px;
+      display: grid;
+      grid-template-columns: 145px 1fr 110px 155px 105px 155px;
+      border-bottom: 1px solid var(--line);
+      transition: min-height .22s ease;
+    }
+    .ie-study > div { display: flex; align-items: center; padding: 7px 10px; border-right: 1px solid var(--line); font-size: calc(var(--base-font) + 1px); line-height: 1.45; }
+    .ie-study > div:last-child { border-right: 0; }
+    .ie-title { justify-content: center; background: var(--field); font-weight: 800; text-align: center; }
+    .ie-label { justify-content: center; background: #f4f4f4; font-weight: 800; }
+    .ie-value { color: #243246; }
+    .ie-value strong { margin-right: 5px; color: #183f80; font-size: 1.18em; }
+    .page-spacer { flex: 1; min-height: 10px; background: #fff; }
+    .signoff {
+      flex: none;
+      height: 68px;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      border-top: 1px solid var(--line);
+    }
+    .signoff div { display: grid; grid-template-rows: 24px 1fr; border-right: 1px solid var(--line); text-align: center; font-size: 10px; }
+    .signoff div:last-child { border-right: 0; }
+    .signoff b { display: grid; place-items: center; border-bottom: 1px solid var(--line); background: var(--field); }
+
+    .paper[data-layout="1"] { --body-height: 380px; --caption-height: 64px; --caption-font: 17px; --placeholder-font: 17px; --side-font: 12px; }
+    .paper[data-layout="2"] { --body-height: 390px; --caption-height: 58px; --caption-font: 15px; --placeholder-font: 15px; --side-font: 12px; }
+    .paper[data-layout="3"] { --body-height: 405px; --caption-height: 54px; --caption-font: 14px; --placeholder-font: 14px; --side-font: 11.5px; }
+    .paper[data-layout="4"] { --body-height: 424px; --caption-height: 48px; --caption-font: 14px; --placeholder-font: 14px; --side-font: 11.5px; }
+    .paper[data-layout="5"] { --body-height: 442px; --caption-height: 45px; --caption-font: 13px; --placeholder-font: 12.5px; --side-font: 11px; }
+    .paper[data-layout="6"] { --body-height: 458px; --caption-height: 43px; --caption-font: 12.5px; --placeholder-font: 12px; --side-font: 10.5px; }
+    .paper[data-font="large"] { --base-font: 13px; }
+    .paper[data-font="large"] .side-section { font-size: calc(var(--side-font) + 1px); }
+    .paper[data-font="large"] .caption { font-size: calc(var(--caption-font) + 1px); }
+    .paper[data-font="large"] .ie-study > div { font-size: calc(var(--base-font) + 1px); }
+    .paper[data-layout="1"] .slot-number,
+    .paper[data-layout="2"] .slot-number { width: 32px; height: 32px; font-size: 16px; }
+    .paper[data-layout="1"] .image-placeholder { width: min(72%, 520px); height: 72%; }
+    .paper[data-layout="2"] .image-placeholder { height: 74%; }
+    .paper[data-layout="1"] .side-section,
+    .paper[data-layout="2"] .side-section { padding-block: 5px; line-height: 1.35; }
+
+    @media (max-height: 850px) {
+      .workspace { display: block; padding-top: 16px; }
+      .page-wrap { margin: 0 auto; }
+      .paper { min-height: 690px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="title-block">
+      <h1>标准作业指导书 · 动态工图版式</h1>
+      <p>原型预览，不会修改正式 DOCX。</p>
+    </div>
+    <div class="toolbar-spacer"></div>
+    <div class="control-group">
+      <span class="control-label">工图数量</span>
+      <div class="segmented" id="layoutControl" aria-label="工图数量">
+        <button type="button" data-layout="1">1 格</button>
+        <button type="button" data-layout="2">2 格</button>
+        <button type="button" data-layout="3">3 格</button>
+        <button type="button" data-layout="4">4 格</button>
+        <button type="button" data-layout="5">5 格</button>
+        <button type="button" data-layout="6" class="active">6 格</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <span class="control-label">文字大小</span>
+      <div class="segmented" id="fontControl" aria-label="文字大小">
+        <button type="button" data-font="standard">标准</button>
+        <button type="button" data-font="large" class="active">大字</button>
+      </div>
+    </div>
+    <span id="layoutStatus" class="status-pill">6 格 · 大字 · IE 栏位于工图区下方</span>
+  </header>
+
+  <main class="workspace">
+    <div class="page-wrap">
+      <div class="page-meta"><b>指导书第 2 页预览</b><span id="moveNote">当前工图区：2 行 × 3 列</span><span>A4 横向 · 草稿</span></div>
+      <article id="paper" class="paper" data-layout="6" data-font="large">
+        <section class="header-grid">
+          <div class="cell logo">LOGO</div>
+          <div class="cell doc-title">标准作业指导书</div>
+          <div class="cell page-number">页码<br>2 OF 9</div>
+          <div class="meta-row">
+            <span class="meta-label">产品品名</span><span class="meta-value">USB-C 转接线</span>
+            <span class="meta-label">本厂料号</span><span class="meta-value">DRAFT-20260817-001</span>
+            <span class="meta-label">文件编号</span><span class="meta-value">SOP-DRAFT-20260817</span>
+            <span class="meta-label">制作日期</span><span class="meta-value">2026/8/18</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">工站</span><span class="meta-value">检查材料</span>
+            <span class="meta-label">版本</span><span class="meta-value">DRAFT</span>
+            <span class="meta-label">作业顺序</span><span class="meta-value" style="grid-column: span 5">OP01　检查材料　｜　检查来料</span>
+          </div>
+        </section>
+
+        <section class="instruction-body">
+          <div class="vertical-label">图片流程描述及说明</div>
+          <div id="workGrid" class="work-grid"></div>
+          <aside class="side-sections">
+            <div class="side-section"><b>作业标准</b><span>核对工单、物料标签和来料状态，缺项保持待人工确认。</span></div>
+            <div class="side-section"><b>设备 / 工具</b><span>按受控工艺配置；未确认的设备型号不自动填写。</span></div>
+            <div class="side-section"><b>辅助材料</b><span>材料以受控 BOM 为准。</span></div>
+            <div class="side-section"><b>注意事项</b><span>发现异常立即停止，隔离并通知负责人。</span></div>
+            <div class="side-section"><b>记录要求</b><span>登记工单号、检查结果和异常现象。</span></div>
+            <div class="side-section"><b>输入资料</b><span>本工序输入资料待责任人确认。</span></div>
+          </aside>
+        </section>
+
+        <section class="ie-study">
+          <div class="ie-title">IE 工时记录<br>随工图区移动</div>
+          <div class="ie-value"><strong>20 秒</strong> 标准工时（待 IE 确认）</div>
+          <div class="ie-label">作业人数</div>
+          <div class="ie-value"><strong>1 人</strong> 待现场核对</div>
+          <div class="ie-label">工时来源</div>
+          <div class="ie-value">用户提供的项目文字</div>
+        </section>
+        <div class="page-spacer"></div>
+        <footer class="signoff">
+          <div><b>批准</b><span></span></div>
+          <div><b>审核</b><span></span></div>
+          <div><b>制作</b><span></span></div>
+          <div><b>材料环保要求</b><span></span></div>
+          <div><b>管制文件（印章处）</b><span></span></div>
+          <div><b>图号</b><span></span></div>
+        </footer>
+      </article>
+    </div>
+  </main>
+
+  <script>
+    const paper = document.getElementById("paper");
+    const workGrid = document.getElementById("workGrid");
+    const layoutStatus = document.getElementById("layoutStatus");
+    const moveNote = document.getElementById("moveNote");
+    const captions = [
+      "核对工单与来料标签",
+      "检查材料型号和数量",
+      "确认外观无破损、无污染",
+      "异常品隔离并做好标识",
+      "登记工单号与检查结果",
+      "完成本工序并转交下工序"
+    ];
+
+    const layoutPresets = {
+      1: { columns: 1, rows: 1, order: [1], label: "1 行 × 1 列" },
+      2: { columns: 2, rows: 1, order: [1, 2], label: "1 行 × 2 列" },
+      3: { columns: 3, rows: 1, order: [1, 2, 3], label: "1 行 × 3 列" },
+      4: { columns: 2, rows: 2, order: [1, 2, 4, 3], label: "2 行 × 2 列" },
+      5: { columns: 6, rows: 2, order: [1, 2, 3, 5, 4], label: "2 行 · 上 3 下 2" },
+      6: { columns: 3, rows: 2, order: [1, 2, 3, 6, 5, 4], label: "2 行 × 3 列" }
+    };
+
+    function renderSlots() {
+      const count = Number(paper.dataset.layout);
+      const preset = layoutPresets[count];
+      paper.style.setProperty("--columns", preset.columns);
+      paper.style.setProperty("--rows", preset.rows);
+      workGrid.innerHTML = preset.order.map((slotNo, index) => {
+        const isFiveGrid = count === 5;
+        const row = isFiveGrid ? (index < 3 ? 0 : 1) : Math.floor(index / preset.columns);
+        const isLastColumn = isFiveGrid ? index === 2 || index === 4 : index % preset.columns === preset.columns - 1;
+        const columnSpan = isFiveGrid ? (index < 3 ? 2 : 3) : 1;
+        return `<section class="work-slot ${isLastColumn ? "last-column" : ""} ${row === preset.rows - 1 ? "last-row" : ""}" style="grid-column: span ${columnSpan}">
+          <div class="image-zone">
+            <span class="slot-number">${slotNo}</span>
+            <div class="image-placeholder"><span><b>工图 ${slotNo}</b>图片由人工上传并确认</span></div>
+          </div>
+          <div class="caption"><b>${slotNo}.</b><span>${captions[slotNo - 1]}</span></div>
+        </section>`;
+      }).join("");
+      const fontLabel = paper.dataset.font === "large" ? "大字" : "标准字";
+      layoutStatus.textContent = `${count} 格 · ${fontLabel} · IE 栏位于工图区下方`;
+      moveNote.textContent = `当前工图区：${preset.label}；IE 栏随工图数量移动`;
+    }
+
+    document.getElementById("layoutControl").addEventListener("click", event => {
+      const button = event.target.closest("button[data-layout]");
+      if (!button) return;
+      paper.dataset.layout = button.dataset.layout;
+      document.querySelectorAll("[data-layout]").forEach(item => item.classList.toggle("active", item === button));
+      renderSlots();
+    });
+
+    document.getElementById("fontControl").addEventListener("click", event => {
+      const button = event.target.closest("button[data-font]");
+      if (!button) return;
+      paper.dataset.font = button.dataset.font;
+      document.querySelectorAll("[data-font]").forEach(item => item.classList.toggle("active", item === button));
+      renderSlots();
+    });
+
+    const previewParams = new URLSearchParams(window.location.search);
+    const initialLayout = previewParams.get("layout");
+    const initialFont = previewParams.get("font");
+    if (["1", "2", "3", "4", "5", "6"].includes(initialLayout)) {
+      paper.dataset.layout = initialLayout;
+      document.querySelectorAll("[data-layout]").forEach(item => item.classList.toggle("active", item.dataset.layout === initialLayout));
+    }
+    if (["standard", "large"].includes(initialFont)) {
+      paper.dataset.font = initialFont;
+      document.querySelectorAll("[data-font]").forEach(item => item.classList.toggle("active", item.dataset.font === initialFont));
+    }
+
+    renderSlots();
+  </script>
+</body>
+</html>
